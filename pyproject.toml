@@ -1,0 +1,29 @@
+[project]
+name = "abmcts-explorer"
+version = "0.1.0"
+description = "AB-MCTS exploration utilities for research workflows"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "arviz<1",
+    "httpx>=0.28",
+    "openai>=1.0",
+    "treequest[abmcts-m]>=0.3.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+abmcts-engine = "abmcts_explorer.engine_cli:main"
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["abmcts_explorer*"]
