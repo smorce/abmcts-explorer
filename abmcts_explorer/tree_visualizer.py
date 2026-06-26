@@ -517,6 +517,59 @@ def build_visualizer_html(title: str) -> str:
       white-space: pre-wrap;
     }}
     .tooltip.visible {{ opacity: 1; }}
+    .node-detail {{
+      position: absolute;
+      top: 18px;
+      right: 18px;
+      width: min(430px, calc(100vw - 36px));
+      max-height: calc(100% - 36px);
+      display: grid;
+      grid-template-rows: auto 1fr;
+      overflow: hidden;
+      background: rgba(255,255,255,.98);
+      border: 2px solid #111827;
+      border-radius: 8px;
+      box-shadow: 0 18px 44px rgba(0,0,0,.18);
+      z-index: 5;
+    }}
+    .node-detail[hidden] {{
+      display: none;
+    }}
+    .node-detail header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      color: white;
+      background: #111827;
+      border-bottom: 0;
+    }}
+    .node-detail h2 {{
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.25;
+    }}
+    .node-detail button {{
+      width: 28px;
+      height: 28px;
+      border: 1px solid rgba(255,255,255,.3);
+      border-radius: 6px;
+      color: white;
+      background: rgba(255,255,255,.12);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+    }}
+    .node-detail pre {{
+      margin: 0;
+      padding: 14px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      color: #111827;
+      font: 12px/1.55 "Cascadia Mono", Consolas, monospace;
+    }}
     .status {{
       position: absolute;
       left: clamp(12px, 3vw, 28px);
@@ -564,6 +617,12 @@ def build_visualizer_html(title: str) -> str:
         max-height: 24vh;
         padding: 16px 18px;
       }}
+      .node-detail {{
+        top: 10px;
+        right: 10px;
+        width: calc(100vw - 20px);
+        max-height: 54vh;
+      }}
     }}
   </style>
 </head>
@@ -589,6 +648,13 @@ def build_visualizer_html(title: str) -> str:
       <svg id="tree" role="img" aria-label="AB-MCTS search tree"></svg>
       <div class="status" id="status">&#25506;&#32034;&#24453;&#27231;&#20013;<small>&#12494;&#12540;&#12489;&#12395; hover &#12377;&#12427;&#12392;&#35443;&#32048;&#12434;&#34920;&#31034;&#12375;&#12414;&#12377;</small></div>
       <div class="tooltip" id="tooltip"></div>
+      <aside class="node-detail" id="nodeDetail" hidden>
+        <header>
+          <h2 id="nodeDetailTitle">Node detail</h2>
+          <button id="nodeDetailClose" type="button" aria-label="Close">×</button>
+        </header>
+        <pre id="nodeDetailBody"></pre>
+      </aside>
     </main>
   </div>
   <script>
@@ -610,6 +676,10 @@ def build_visualizer_html(title: str) -> str:
 
     const svg = document.getElementById("tree");
     const tooltip = document.getElementById("tooltip");
+    const nodeDetail = document.getElementById("nodeDetail");
+    const nodeDetailTitle = document.getElementById("nodeDetailTitle");
+    const nodeDetailBody = document.getElementById("nodeDetailBody");
+    const nodeDetailClose = document.getElementById("nodeDetailClose");
     const activeNodeIds = new Set();
     let runCompleted = false;
     let runFinishedPayload = null;
@@ -661,12 +731,8 @@ def build_visualizer_html(title: str) -> str:
       const {{ positions, maxDepth }} = layout();
       const values = [...nodes.values()];
       const best = values.filter(n => n.id !== "root").sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
-      const bestPath = new Set();
-      let cursor = best;
-      while (cursor) {{
-        bestPath.add(cursor.id);
-        cursor = nodes.get(cursor.parent_id);
-      }}
+      const highlightTarget = highlightedPathTarget(best);
+      const highlightedEdges = edgeKeysForPath(pathFor(highlightTarget));
 
       svg.innerHTML = "";
       const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
@@ -683,7 +749,7 @@ def build_visualizer_html(title: str) -> str:
         line.setAttribute("y1", from.y + 23);
         line.setAttribute("x2", to.x);
         line.setAttribute("y2", to.y - 23);
-        line.setAttribute("class", bestPath.has(node.id) && bestPath.has(node.parent_id) ? "edge best" : "edge");
+        line.setAttribute("class", highlightedEdges.has(edgeKey(node.parent_id, node.id)) ? "edge best" : "edge");
         g.appendChild(line);
       }}
 
@@ -695,6 +761,10 @@ def build_visualizer_html(title: str) -> str:
         group.setAttribute("transform", `translate(${{pos.x}} ${{pos.y}})`);
         group.addEventListener("mousemove", event => showTooltip(event, node));
         group.addEventListener("mouseleave", hideTooltip);
+        group.addEventListener("click", event => {{
+          event.stopPropagation();
+          pinNodeDetail(node);
+        }});
 
         for (const pulseClass of ["pulse", "pulse two", "pulse three"]) {{
           const pulse = document.createElementNS("http://www.w3.org/2000/svg", "circle");
@@ -728,7 +798,7 @@ def build_visualizer_html(title: str) -> str:
       document.getElementById("profile").textContent = best ? best.profile : "waiting";
       const status = document.getElementById("status");
       if (runCompleted && best) {{
-        const finalPath = pathFor(best)
+        const finalPath = pathFor(highlightTarget || best)
           .map(node => `${{node.label || node.id}}(${{node.score == null ? "-" : Number(node.score).toFixed(2)}})`)
           .join(" -> ");
         status.innerHTML =
@@ -748,6 +818,33 @@ def build_visualizer_html(title: str) -> str:
         cursor = nodes.get(cursor.parent_id);
       }}
       return path;
+    }}
+
+    function edgeKey(parentId, childId) {{
+      return `${{parentId}}->${{childId}}`;
+    }}
+
+    function edgeKeysForPath(path) {{
+      const keys = new Set();
+      for (let index = 1; index < path.length; index += 1) {{
+        keys.add(edgeKey(path[index].parent_id, path[index].id));
+      }}
+      return keys;
+    }}
+
+    function highlightedPathTarget(best) {{
+      for (const nodeId of activeNodeIds) {{
+        const node = nodes.get(nodeId);
+        if (node && node.id !== "root") return node;
+      }}
+      const reached = [...nodes.values()]
+        .filter(node => node.id !== "root")
+        .sort((a, b) => {{
+          const depthDiff = (b.depth || 0) - (a.depth || 0);
+          if (depthDiff !== 0) return depthDiff;
+          return String(b.id).localeCompare(String(a.id), undefined, {{ numeric: true }});
+        }})[0];
+      return reached || best;
     }}
 
     function escapeHtml(value) {{
@@ -776,6 +873,29 @@ def build_visualizer_html(title: str) -> str:
 
     function hideTooltip() {{
       tooltip.classList.remove("visible");
+    }}
+
+    function nodeDetailText(node) {{
+      return [
+        `${{node.label}}  score=${{node.score == null ? "-" : Number(node.score).toFixed(3)}}`,
+        `id: ${{node.id}}`,
+        `parent: ${{node.parent_id || "-"}}`,
+        `action: ${{node.action}}`,
+        `profile: ${{node.profile}}`,
+        `algorithm: ${{node.algorithm}}`,
+        `step: ${{node.step_index}} depth: ${{node.depth}}`,
+        "",
+        node.summary || "",
+        "",
+        "state:",
+        JSON.stringify(node.state || {{}}, null, 2)
+      ].join("\\n");
+    }}
+
+    function pinNodeDetail(node) {{
+      nodeDetailTitle.textContent = `${{node.label || node.id}}`;
+      nodeDetailBody.textContent = nodeDetailText(node);
+      nodeDetail.hidden = false;
     }}
 
     function applyMessage(message) {{
@@ -837,6 +957,13 @@ def build_visualizer_html(title: str) -> str:
       render();
     }});
     svg.addEventListener("pointerup", () => state.dragging = false);
+    svg.addEventListener("click", () => {{
+      nodeDetail.hidden = true;
+    }});
+    nodeDetail.addEventListener("click", event => event.stopPropagation());
+    nodeDetailClose.addEventListener("click", () => {{
+      nodeDetail.hidden = true;
+    }});
 
     window.addEventListener("resize", render);
     const pollingIntervalSeconds = 5;
