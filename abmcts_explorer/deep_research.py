@@ -70,6 +70,7 @@ def build_deep_research_prompt(
     parent_state: DeepResearchState | None,
     context: ExplorerContext,
 ) -> list[dict[str, str]]:
+    parent_state = _effective_parent_state(parent_state, context)
     web_results = context.metadata.get("web_results", [])
     web_context = "\n".join(
         f"- {item.get('title', '')}: {item.get('description', '')} ({item.get('url', '')})"
@@ -135,6 +136,7 @@ def parse_deep_research_state(
     parent_state: DeepResearchState | None,
     context: ExplorerContext,
 ) -> DeepResearchState:
+    parent_state = _effective_parent_state(parent_state, context)
     text = raw.strip()
     web_results = context.metadata.get("web_results", [])
     urls = tuple(
@@ -160,6 +162,18 @@ def parse_deep_research_state(
         open_questions=open_questions,
         depth=0 if parent_state is None else parent_state.depth + 1,
     )
+
+
+def _effective_parent_state(
+    parent_state: DeepResearchState | None,
+    context: ExplorerContext,
+) -> DeepResearchState | None:
+    if parent_state is not None:
+        return parent_state
+    if context.profile != SearchProfile.GO_DEEP:
+        return None
+    seed = context.metadata.get("deep_seed_state")
+    return seed if isinstance(seed, DeepResearchState) else None
 
 
 def score_deep_research_state(
@@ -437,6 +451,24 @@ class DeepResearchRunner:
             )
 
             if decision.profile != explorer.config.profile:
+                if decision.profile == SearchProfile.GO_DEEP and best:
+                    deep_seed_state = max(best, key=lambda item: item[1])[0]
+                    metadata["deep_seed_state"] = deep_seed_state
+                    metadata["action_parent_state"] = deep_seed_state
+                    metadata["observer_parent_state"] = deep_seed_state
+                    self.logger.log_event(
+                        "deep_seed_selected",
+                        {
+                            "epoch_index": epoch_index,
+                            "seed_depth": deep_seed_state.depth,
+                            "seed_preview": deep_seed_state.draft[:240],
+                        },
+                    )
+                else:
+                    metadata.pop("deep_seed_state", None)
+                    metadata.pop("action_parent_state", None)
+                    metadata.pop("observer_parent_state", None)
+
                 self.logger.log_event(
                     "profile_switched",
                     {

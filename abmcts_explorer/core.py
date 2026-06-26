@@ -411,10 +411,12 @@ class ABMCTSExplorer(Generic[StateT]):
                 _action: ActionSpec[StateT] = action,
                 _action_name: str = name,
             ) -> tuple[StateT, float]:
-                self._notify_trial_started(parent_state, context, _action_name)
-                result = _action.run_sync(parent_state, context)
+                action_parent = self._action_parent_state(parent_state, context)
+                observer_parent = self._observer_parent_state(action_parent, context)
+                self._notify_trial_started(observer_parent, context, _action_name)
+                result = _action.run_sync(action_parent, context)
                 self._validate_score(result.score)
-                self._notify_node(parent_state, result, context, _action_name)
+                self._notify_node(observer_parent, result, context, _action_name)
                 return result.state, result.score
 
             generate_fns[name] = generate
@@ -443,15 +445,17 @@ class ABMCTSExplorer(Generic[StateT]):
 
         for trial in trials:
             action = self.actions[trial.action]
-            self._notify_trial_started(trial.parent_state, context, trial.action)
-            result = action.run_sync(trial.parent_state, context)
+            action_parent = self._action_parent_state(trial.parent_state, context)
+            observer_parent = self._observer_parent_state(action_parent, context)
+            self._notify_trial_started(observer_parent, context, trial.action)
+            result = action.run_sync(action_parent, context)
             self._validate_score(result.score)
             self.tree = self.backend.tell(
                 self.tree,
                 trial.trial_id,
                 (result.state, result.score),
             )
-            self._notify_node(trial.parent_state, result, context, trial.action)
+            self._notify_node(observer_parent, result, context, trial.action)
             self.step_index += 1
 
         self._record_event(
@@ -469,23 +473,27 @@ class ABMCTSExplorer(Generic[StateT]):
         self.tree, trials = self.backend.ask_batch(self.tree, batch_size, actions)
         context = self._context()
 
-        async def run_trial(trial: Any) -> tuple[Any, GenerationResult[StateT]]:
+        async def run_trial(
+            trial: Any,
+        ) -> tuple[Any, GenerationResult[StateT], StateT | None]:
             action = self.actions[trial.action]
-            self._notify_trial_started(trial.parent_state, context, trial.action)
-            result = await action.run_async(trial.parent_state, context)
-            return trial, result
+            action_parent = self._action_parent_state(trial.parent_state, context)
+            observer_parent = self._observer_parent_state(action_parent, context)
+            self._notify_trial_started(observer_parent, context, trial.action)
+            result = await action.run_async(action_parent, context)
+            return trial, result, observer_parent
 
         tasks = [asyncio.create_task(run_trial(trial)) for trial in trials]
 
         for task in asyncio.as_completed(tasks):
-            trial, result = await task
+            trial, result, observer_parent = await task
             self._validate_score(result.score)
             self.tree = self.backend.tell(
                 self.tree,
                 trial.trial_id,
                 (result.state, result.score),
             )
-            self._notify_node(trial.parent_state, result, context, trial.action)
+            self._notify_node(observer_parent, result, context, trial.action)
             self.step_index += 1
 
         self._record_event(
@@ -636,6 +644,26 @@ class ABMCTSExplorer(Generic[StateT]):
             action_name=action_name,
             algorithm=self.config.algorithm_kind.value,
         )
+
+    def _observer_parent_state(
+        self,
+        parent_state: StateT | None,
+        context: ExplorerContext,
+    ) -> StateT | None:
+        if parent_state is not None:
+            return parent_state
+        observer_parent = context.metadata.get("observer_parent_state")
+        return observer_parent
+
+    def _action_parent_state(
+        self,
+        parent_state: StateT | None,
+        context: ExplorerContext,
+    ) -> StateT | None:
+        if parent_state is not None:
+            return parent_state
+        action_parent = context.metadata.get("action_parent_state")
+        return action_parent
 
     def _json_safe(self, value: Any) -> Any:
         if is_dataclass(value) and not isinstance(value, type):

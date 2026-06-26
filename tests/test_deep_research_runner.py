@@ -6,10 +6,10 @@ from abmcts_explorer import (
     ActionSpec,
     DeepResearchRunner,
     DeepResearchRunnerConfig,
-    DeepResearchLogger,
     DeepResearchState,
     ExplorerContext,
     GenerationResult,
+    ProfileDecision,
     SearchProfile,
     WebSearchResponse,
     WebSearchResult,
@@ -52,9 +52,9 @@ def make_research_action() -> ActionSpec[DeepResearchState]:
                 f"step={calls['count']}; "
                 f"sources={len(urls)}"
             ),
-            evidence_notes=tuple(f"根拠 {index}" for index, _ in enumerate(urls[:3])),
+            evidence_notes=tuple(f"evidence {index}" for index, _ in enumerate(urls[:3])),
             source_urls=urls,
-            open_questions=() if context.profile == SearchProfile.GO_WIDE else ("追加検証",),
+            open_questions=() if context.profile == SearchProfile.GO_WIDE else ("verify more",),
             depth=0 if parent_state is None else parent_state.depth + 1,
         )
         score = 0.86 if context.profile == SearchProfile.GO_WIDE else 0.93
@@ -79,7 +79,7 @@ def test_deep_research_runner_switches_from_wide_to_deep() -> None:
         ),
     )
 
-    report = asyncio.run(runner.run("AIエージェント評価"))
+    report = asyncio.run(runner.run("AI agent evaluation"))
 
     selected_profiles = [decision.profile for decision in report.profile_history]
 
@@ -88,4 +88,59 @@ def test_deep_research_runner_switches_from_wide_to_deep() -> None:
     assert SearchProfile.GO_DEEP in selected_profiles
     assert report.web_results
     assert report.best_candidates
-    assert "AIエージェント評価" in report.report
+    assert report.report
+
+
+def test_go_deep_uses_best_wide_candidate_as_parent() -> None:
+    search_client = FakeSearchClient()
+    deep_parent_drafts: list[str | None] = []
+    calls = {"count": 0}
+
+    def generate(
+        parent_state: DeepResearchState | None,
+        context: ExplorerContext,
+    ) -> GenerationResult[DeepResearchState]:
+        calls["count"] += 1
+        if context.profile == SearchProfile.GO_DEEP:
+            deep_parent_drafts.append(parent_state.draft if parent_state else None)
+
+        draft = f"{context.profile.value}-{calls['count']}"
+        state = DeepResearchState(
+            topic=context.task,
+            draft=draft,
+            source_urls=("https://example.com/source",),
+            depth=0 if parent_state is None else parent_state.depth + 1,
+        )
+        score = 0.95 if draft == "go_wide-2" else 0.80
+        if context.profile == SearchProfile.GO_DEEP:
+            score = 0.90
+        return GenerationResult(state=state, score=score)
+
+    class AlwaysDeepDecider:
+        def decide(self, diagnostics, current_profile) -> ProfileDecision:
+            return ProfileDecision(
+                profile=SearchProfile.GO_DEEP,
+                confidence=1.0,
+                reasons=[],
+                explanation="test forces deep",
+            )
+
+    runner = DeepResearchRunner(
+        search_client=search_client,
+        actions=[ActionSpec(name="tracked_research", generator=generate)],
+        config=DeepResearchRunnerConfig(
+            total_budget=4,
+            epoch_budget=2,
+            best_k=2,
+            search_limit=1,
+            min_wide_epochs=0,
+            wide_batch_size=2,
+            deep_batch_size=1,
+        ),
+        decider=AlwaysDeepDecider(),
+    )
+
+    asyncio.run(runner.run("seed test"))
+
+    assert deep_parent_drafts
+    assert deep_parent_drafts[0] == "go_wide-2"
