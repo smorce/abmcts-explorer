@@ -452,14 +452,23 @@ class DeepResearchRunner:
 
             if decision.profile != explorer.config.profile:
                 if decision.profile == SearchProfile.GO_DEEP and best:
-                    deep_seed_state = max(best, key=lambda item: item[1])[0]
+                    best_score = max(score for _, score in best)
+                    deep_seed_states = [
+                        state
+                        for state, score in best
+                        if abs(score - best_score) <= 1e-9
+                    ]
+                    deep_seed_state = deep_seed_states[0]
                     metadata["deep_seed_state"] = deep_seed_state
                     metadata["action_parent_state"] = deep_seed_state
+                    metadata["action_parent_states"] = deep_seed_states
                     metadata["observer_parent_state"] = deep_seed_state
                     self.logger.log_event(
                         "deep_seed_selected",
                         {
                             "epoch_index": epoch_index,
+                            "seed_count": len(deep_seed_states),
+                            "seed_score": best_score,
                             "seed_depth": deep_seed_state.depth,
                             "seed_preview": deep_seed_state.draft[:240],
                         },
@@ -467,6 +476,7 @@ class DeepResearchRunner:
                 else:
                     metadata.pop("deep_seed_state", None)
                     metadata.pop("action_parent_state", None)
+                    metadata.pop("action_parent_states", None)
                     metadata.pop("observer_parent_state", None)
 
                 self.logger.log_event(

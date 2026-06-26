@@ -91,7 +91,7 @@ def test_deep_research_runner_switches_from_wide_to_deep() -> None:
     assert report.report
 
 
-def test_go_deep_uses_best_wide_candidate_as_parent() -> None:
+def test_go_deep_uses_all_tied_best_wide_candidates_as_parents() -> None:
     search_client = FakeSearchClient()
     deep_parent_drafts: list[str | None] = []
     calls = {"count": 0}
@@ -111,7 +111,7 @@ def test_go_deep_uses_best_wide_candidate_as_parent() -> None:
             source_urls=("https://example.com/source",),
             depth=0 if parent_state is None else parent_state.depth + 1,
         )
-        score = 0.95 if draft == "go_wide-2" else 0.80
+        score = 0.95 if draft in {"go_wide-1", "go_wide-2"} else 0.80
         if context.profile == SearchProfile.GO_DEEP:
             score = 0.90
         return GenerationResult(state=state, score=score)
@@ -135,7 +135,7 @@ def test_go_deep_uses_best_wide_candidate_as_parent() -> None:
             search_limit=1,
             min_wide_epochs=0,
             wide_batch_size=2,
-            deep_batch_size=1,
+            deep_batch_size=2,
         ),
         decider=AlwaysDeepDecider(),
     )
@@ -143,4 +143,4 @@ def test_go_deep_uses_best_wide_candidate_as_parent() -> None:
     asyncio.run(runner.run("seed test"))
 
     assert deep_parent_drafts
-    assert deep_parent_drafts[0] == "go_wide-2"
+    assert set(deep_parent_drafts[:2]) == {"go_wide-1", "go_wide-2"}

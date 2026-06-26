@@ -70,6 +70,18 @@ uv run python .\abmcts_engine.py `
 `--ui-hold-seconds -1` keeps the UI server open until `Ctrl+C`. Use
 `--no-open-browser` when running in a headless shell.
 
+## GO_DEEP Parent Selection
+
+`ABMCTSExplorer` supports seeded deep expansion through
+`ExplorerConfig.metadata["action_parent_states"]`. When this list is present
+and a generated trial has no parent from the backend tree, each batch item uses
+one seed parent in round-robin order.
+
+`DeepResearchRunner` uses this as a rule: when switching from `GO_WIDE` to
+`GO_DEEP`, all candidates tied for the highest score become deep parent
+candidates. If two or more depth-1 candidates have the same highest score, all
+of them are explored by `GO_DEEP`; they are not collapsed to a single winner.
+
 ## DeepResearch CLI
 
 ```powershell

@@ -443,9 +443,13 @@ class ABMCTSExplorer(Generic[StateT]):
         self.tree, trials = self.backend.ask_batch(self.tree, batch_size, actions)
         context = self._context()
 
-        for trial in trials:
+        for trial_index, trial in enumerate(trials):
             action = self.actions[trial.action]
-            action_parent = self._action_parent_state(trial.parent_state, context)
+            action_parent = self._action_parent_state(
+                trial.parent_state,
+                context,
+                trial_index=trial_index,
+            )
             observer_parent = self._observer_parent_state(action_parent, context)
             self._notify_trial_started(observer_parent, context, trial.action)
             result = action.run_sync(action_parent, context)
@@ -474,16 +478,24 @@ class ABMCTSExplorer(Generic[StateT]):
         context = self._context()
 
         async def run_trial(
+            trial_index: int,
             trial: Any,
         ) -> tuple[Any, GenerationResult[StateT], StateT | None]:
             action = self.actions[trial.action]
-            action_parent = self._action_parent_state(trial.parent_state, context)
+            action_parent = self._action_parent_state(
+                trial.parent_state,
+                context,
+                trial_index=trial_index,
+            )
             observer_parent = self._observer_parent_state(action_parent, context)
             self._notify_trial_started(observer_parent, context, trial.action)
             result = await action.run_async(action_parent, context)
             return trial, result, observer_parent
 
-        tasks = [asyncio.create_task(run_trial(trial)) for trial in trials]
+        tasks = [
+            asyncio.create_task(run_trial(trial_index, trial))
+            for trial_index, trial in enumerate(trials)
+        ]
 
         for task in asyncio.as_completed(tasks):
             trial, result, observer_parent = await task
@@ -659,9 +671,14 @@ class ABMCTSExplorer(Generic[StateT]):
         self,
         parent_state: StateT | None,
         context: ExplorerContext,
+        *,
+        trial_index: int = 0,
     ) -> StateT | None:
         if parent_state is not None:
             return parent_state
+        action_parents = context.metadata.get("action_parent_states")
+        if isinstance(action_parents, list) and action_parents:
+            return action_parents[trial_index % len(action_parents)]
         action_parent = context.metadata.get("action_parent_state")
         return action_parent
 

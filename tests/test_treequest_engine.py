@@ -96,6 +96,37 @@ def test_best_reduces_k_when_tree_has_fewer_states() -> None:
     assert len(best) == 1
 
 
+def test_ask_tell_uses_multiple_action_parent_states_round_robin() -> None:
+    parent_states = ["seed-a", "seed-b"]
+    seen_parents: list[str | None] = []
+
+    def generate(
+        parent_state: str | None,
+        context: ExplorerContext,
+    ) -> GenerationResult[str]:
+        seen_parents.append(parent_state)
+        state = f"{parent_state}/child-{len(seen_parents)}"
+        return GenerationResult(state=state, score=0.5)
+
+    explorer = ABMCTSExplorer[str](
+        task="seeded search",
+        actions=[ActionSpec(name="expand", generator=generate)],
+        config=ExplorerConfig(
+            algorithm_kind=AlgorithmKind.ABMCTSA,
+            profile=SearchProfile.GO_DEEP,
+            execution_mode=ExecutionMode.ASK_TELL,
+            budget=2,
+            batch_size=2,
+            best_k=2,
+            metadata={"action_parent_states": parent_states},
+        ),
+    )
+
+    explorer.ask_tell_batch(2)
+
+    assert seen_parents == parent_states
+
+
 def test_async_ask_tell_runs_with_real_treequest_backend() -> None:
     explorer = ABMCTSExplorer[str](
         task="deterministic async search",
