@@ -379,3 +379,41 @@ uv run python .\ABMCTSExplorer\deep_research_cli.py `
 ```
 
 この設定では、序盤は `GO_WIDE` で論点・仮説・反証候補を大量に広げ、診断値が深掘り寄りになったら `GO_DEEP` へ自動で切り替えます。出力先には `report.md`, `profile_history.md`, `sources.md`, `logs/` が保存されます。
+
+## WebUI で探索木を確認する
+
+探索中の木をリアルタイムで確認したい場合は、DeepResearch CLI に `--ui` を付けます。
+`--ui-hold-seconds -1` を指定すると、探索完了後も WebUI サーバーを開いたままにできます。
+ブラウザを自動で開きたくない場合は `--no-open-browser` を付けてください。
+
+```powershell
+$env:SEARXNG_URL='http://127.0.0.1:4866'
+$env:SEARXNG_ENGINE='google'
+$env:SEARXNG_LANGUAGE='ja'
+$env:LLAMA_SERVER_BASE_URL='http://127.0.0.1:1067'
+
+uv run python .\ABMCTSExplorer\deep_research_cli.py `
+  --topic "EUのプライバシー対応の現状と日本の各企業がどんな主要な対応をしているのか？" `
+  --model "Qwen3.6-27B-MTP-GGUF-UD-Q4_K_XL" `
+  --total-budget 1000 `
+  --epoch-budget 25 `
+  --wide-batch-size 16 `
+  --deep-batch-size 5 `
+  --best-k 8 `
+  --search-limit 8 `
+  --output-dir .\ABMCTSExplorer\runs\expert_distillation `
+  --ui `
+  --ui-port 8770 `
+  --no-open-browser `
+  --ui-hold-seconds -1
+```
+
+起動後は次の URL をブラウザで開きます。
+
+```text
+http://127.0.0.1:8770/
+```
+
+UI は 5 秒ごとに `/snapshot` をポーリングしてノードを自動更新します。
+現在探索中のノードはパルス表示され、ノードをクリックすると tooltip 相当の詳細を固定パネルで確認できます。
+探索は `GO_WIDE -> GO_DEEP -> GO_WIDE` のサイクルで進み、同点最高スコアのノードが複数ある場合は全件が次の深掘りまたは横展開の親候補になります。
