@@ -315,6 +315,43 @@ def build_visualizer_html(title: str) -> str:
       letter-spacing: 0;
     }}
     h1 span {{ color: var(--red); }}
+    .connection {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 230px;
+      padding: 10px 14px;
+      background: #111827;
+      color: white;
+      border: 1px solid rgba(255,255,255,.18);
+      border-radius: 8px;
+      box-shadow: 0 8px 22px rgba(17,24,39,.16);
+      font-size: 13px;
+      font-weight: 700;
+    }}
+    .connection-dot {{
+      width: 10px;
+      height: 10px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: #f59e0b;
+      box-shadow: 0 0 0 4px rgba(245,158,11,.18);
+    }}
+    .connection.connected .connection-dot {{
+      background: #22c55e;
+      box-shadow: 0 0 0 4px rgba(34,197,94,.20);
+    }}
+    .connection.disconnected .connection-dot {{
+      background: #ef4444;
+      box-shadow: 0 0 0 4px rgba(239,68,68,.18);
+    }}
+    .connection small {{
+      display: block;
+      margin-top: 2px;
+      color: #cbd5e1;
+      font-size: 11px;
+      font-weight: 600;
+    }}
     .stats {{
       display: grid;
       grid-template-columns: repeat(4, minmax(92px, auto));
@@ -423,6 +460,7 @@ def build_visualizer_html(title: str) -> str:
         flex-direction: column;
         padding: 16px;
       }}
+      .connection {{ min-width: 0; }}
       .stats {{ grid-template-columns: repeat(2, 1fr); }}
       .status {{
         max-height: 24vh;
@@ -434,7 +472,14 @@ def build_visualizer_html(title: str) -> str:
 <body>
   <div class="shell">
     <header>
-      <h1><span>AB-MCTS</span> 木探索ライブ</h1>
+      <h1><span>AB-MCTS</span> &#26408;&#25506;&#32034;&#12521;&#12452;&#12502;</h1>
+      <div class="connection disconnected" id="connectionStatus">
+        <span class="connection-dot" aria-hidden="true"></span>
+        <div>
+          <span id="connectionLabel">&#12473;&#12486;&#12540;&#12479;&#12473;: &#25509;&#32154;&#30906;&#35469;&#20013;</span>
+          <small id="pollingLabel">&#12509;&#12540;&#12522;&#12531;&#12464;: 5&#31186;&#12372;&#12392;</small>
+        </div>
+      </div>
       <div class="stats">
         <div class="metric"><b id="nodeCount">0</b><span>nodes</span></div>
         <div class="metric"><b id="bestScore">0.00</b><span>best score</span></div>
@@ -444,7 +489,7 @@ def build_visualizer_html(title: str) -> str:
     </header>
     <main>
       <svg id="tree" role="img" aria-label="AB-MCTS search tree"></svg>
-      <div class="status" id="status">探索待機中<small>ノードに hover すると詳細を表示します</small></div>
+      <div class="status" id="status">&#25506;&#32034;&#24453;&#27231;&#20013;<small>&#12494;&#12540;&#12489;&#12395; hover &#12377;&#12427;&#12392;&#35443;&#32048;&#12434;&#34920;&#31034;&#12375;&#12414;&#12377;</small></div>
       <div class="tooltip" id="tooltip"></div>
     </main>
   </div>
@@ -575,8 +620,8 @@ def build_visualizer_html(title: str) -> str:
       document.getElementById("profile").textContent = best ? best.profile : "waiting";
       const status = document.getElementById("status");
       status.innerHTML = best
-        ? `良い解へ探索中<small>best=${{Number(best.score).toFixed(3)}} / action=${{best.action}}</small>`
-        : `探索待機中<small>ノードに hover すると詳細を表示します</small>`;
+        ? `&#33391;&#12356;&#35299;&#12408;&#25506;&#32034;&#20013;<small>best=${{Number(best.score).toFixed(3)}} / action=${{best.action}}</small>`
+        : `&#25506;&#32034;&#24453;&#27231;&#20013;<small>&#12494;&#12540;&#12489;&#12395; hover &#12377;&#12427;&#12392;&#35443;&#32048;&#12434;&#34920;&#31034;&#12375;&#12414;&#12377;</small>`;
     }}
 
     function showTooltip(event, node) {{
@@ -630,8 +675,47 @@ def build_visualizer_html(title: str) -> str:
     svg.addEventListener("pointerup", () => state.dragging = false);
 
     window.addEventListener("resize", render);
+    const pollingIntervalSeconds = 5;
+    const connectionStatus = document.getElementById("connectionStatus");
+    const connectionLabel = document.getElementById("connectionLabel");
+    const pollingLabel = document.getElementById("pollingLabel");
+    pollingLabel.textContent = `\u30dd\u30fc\u30ea\u30f3\u30b0: ${{pollingIntervalSeconds}}\u79d2\u3054\u3068`;
+
+    function setConnectionState(stateName, detail) {{
+      connectionStatus.classList.remove("connected", "disconnected");
+      connectionStatus.classList.add(stateName === "connected" ? "connected" : "disconnected");
+      connectionLabel.textContent = `\u30b9\u30c6\u30fc\u30bf\u30b9: ${{detail}}`;
+    }}
+
+    function applySnapshot(snapshot) {{
+      applyMessage({{
+        type: "snapshot",
+        nodes: snapshot.nodes || [],
+        events: snapshot.events || []
+      }});
+    }}
+
+    async function pollSnapshot() {{
+      try {{
+        const response = await fetch("/snapshot", {{ cache: "no-store" }});
+        if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+        applySnapshot(await response.json());
+        setConnectionState("connected", "\u63a5\u7d9a\u4e2d");
+      }} catch (error) {{
+        setConnectionState("disconnected", "\u5207\u65ad");
+      }}
+    }}
+
     const events = new EventSource("/events");
-    events.onmessage = event => applyMessage(JSON.parse(event.data));
+    events.onopen = () => setConnectionState("connected", "\u63a5\u7d9a\u4e2d");
+    events.onerror = () => setConnectionState("disconnected", "\u5207\u65ad");
+    events.onmessage = event => {{
+      applyMessage(JSON.parse(event.data));
+      setConnectionState("connected", "\u63a5\u7d9a\u4e2d");
+    }};
+
+    pollSnapshot();
+    setInterval(pollSnapshot, pollingIntervalSeconds * 1000);
     render();
   </script>
 </body>
