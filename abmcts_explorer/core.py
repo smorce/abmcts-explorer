@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
 from typing import Any, Awaitable, Callable, Generic, Optional, Protocol, TypeVar, Union
 
@@ -189,6 +189,22 @@ class SearchBackend(Protocol, Generic[StateT]):
         ...
 
 
+class ExplorerObserver(Protocol, Generic[StateT]):
+    def on_node_generated(
+        self,
+        *,
+        parent_state: StateT | None,
+        result: GenerationResult[StateT],
+        context: ExplorerContext,
+        action_name: str,
+        algorithm: str,
+    ) -> None:
+        ...
+
+    def on_run_event(self, event: dict[str, Any]) -> None:
+        ...
+
+
 @dataclass
 class TreeQuestBackend(Generic[StateT]):
     algorithm_kind: AlgorithmKind
@@ -318,6 +334,7 @@ class ABMCTSExplorer(Generic[StateT]):
         actions: list[ActionSpec[StateT]],
         config: ExplorerConfig,
         backend: SearchBackend[StateT] | None = None,
+        observer: ExplorerObserver[StateT] | None = None,
     ) -> None:
         if not actions:
             raise ValueError("At least one ActionSpec is required.")
@@ -331,14 +348,23 @@ class ABMCTSExplorer(Generic[StateT]):
             algorithm_kind=config.algorithm_kind,
             algo_kwargs=config.algo_kwargs,
         )
+        self.observer = observer
         self.tree = self.backend.init_tree()
         self.step_index = 0
         self.history: list[dict[str, Any]] = []
+        self.node_logs: list[dict[str, Any]] = []
+        self._state_to_node_id: dict[int, str] = {}
+        self._node_depths: dict[str, int] = {"root": 0}
+        self._next_node_id = 1
 
     def reset(self) -> None:
         self.tree = self.backend.init_tree()
         self.step_index = 0
         self.history.clear()
+        self.node_logs.clear()
+        self._state_to_node_id.clear()
+        self._node_depths = {"root": 0}
+        self._next_node_id = 1
 
     def active_actions(self) -> dict[str, ActionSpec[StateT]]:
         return {
@@ -373,9 +399,11 @@ class ABMCTSExplorer(Generic[StateT]):
             def generate(
                 parent_state: StateT | None,
                 _action: ActionSpec[StateT] = action,
+                _action_name: str = name,
             ) -> tuple[StateT, float]:
                 result = _action.run_sync(parent_state, context)
                 self._validate_score(result.score)
+                self._notify_node(parent_state, result, context, _action_name)
                 return result.state, result.score
 
             generate_fns[name] = generate
@@ -411,6 +439,7 @@ class ABMCTSExplorer(Generic[StateT]):
                 trial.trial_id,
                 (result.state, result.score),
             )
+            self._notify_node(trial.parent_state, result, context, trial.action)
             self.step_index += 1
 
         self._record_event(
@@ -443,6 +472,7 @@ class ABMCTSExplorer(Generic[StateT]):
                 trial.trial_id,
                 (result.state, result.score),
             )
+            self._notify_node(trial.parent_state, result, context, trial.action)
             self.step_index += 1
 
         self._record_event(
@@ -517,12 +547,68 @@ class ABMCTSExplorer(Generic[StateT]):
         self.step_index = 0
 
     def _record_event(self, event_type: str, payload: dict[str, Any]) -> None:
-        self.history.append(
+        event = {
+            "event_type": event_type,
+            "step_index": self.step_index,
+            "profile": self.config.profile.value,
+            "algorithm": self.config.algorithm_kind.value,
+            "payload": payload,
+        }
+        self.history.append(event)
+        if self.observer is not None:
+            self.observer.on_run_event(event)
+
+    def _notify_node(
+        self,
+        parent_state: StateT | None,
+        result: GenerationResult[StateT],
+        context: ExplorerContext,
+        action_name: str,
+    ) -> None:
+        node_id = f"n{self._next_node_id}"
+        self._next_node_id += 1
+        parent_id = (
+            self._state_to_node_id.get(id(parent_state))
+            if parent_state is not None
+            else "root"
+        )
+        parent_id = parent_id or "root"
+        depth = self._node_depths.get(parent_id, 0) + 1
+        self._state_to_node_id[id(result.state)] = node_id
+        self._node_depths[node_id] = depth
+        self.node_logs.append(
             {
-                "event_type": event_type,
-                "step_index": self.step_index,
-                "profile": self.config.profile.value,
+                "id": node_id,
+                "parent_id": parent_id,
+                "score": result.score,
+                "action": action_name,
+                "profile": context.profile.value,
                 "algorithm": self.config.algorithm_kind.value,
-                "payload": payload,
+                "step_index": context.step_index,
+                "depth": depth,
+                "state_repr": repr(result.state),
+                "metadata": self._json_safe(result.metadata),
             }
         )
+
+        if self.observer is None:
+            return
+
+        self.observer.on_node_generated(
+            parent_state=parent_state,
+            result=result,
+            context=context,
+            action_name=action_name,
+            algorithm=self.config.algorithm_kind.value,
+        )
+
+    def _json_safe(self, value: Any) -> Any:
+        if is_dataclass(value) and not isinstance(value, type):
+            return self._json_safe(asdict(value))
+        if isinstance(value, dict):
+            return {str(key): self._json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._json_safe(item) for item in value]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return repr(value)

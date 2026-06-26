@@ -32,6 +32,44 @@ uv run python .\abmcts_engine.py `
   --output .\engine_auto_result.json
 ```
 
+The output JSON includes `node_logs` by default. Each row records the generated
+node id, parent id, score, action, profile, algorithm, depth, and state repr.
+
+To also save node logs as JSONL:
+
+```powershell
+uv run python .\abmcts_engine.py `
+  --task "search topic" `
+  --profile auto `
+  --budget 40 `
+  --epoch-budget 8 `
+  --batch-size 4 `
+  --output .\engine_auto_result.json `
+  --node-log .\engine_nodes.jsonl
+```
+
+## Live Tree WebUI
+
+Use `--ui` to start a local HTML/SSE visualizer while the search runs. Nodes are
+added in real time, and hovering a node shows the action, score, profile,
+algorithm, depth, and state summary.
+
+```powershell
+uv run python .\abmcts_engine.py `
+  --task "search topic" `
+  --profile auto `
+  --budget 80 `
+  --epoch-budget 10 `
+  --batch-size 5 `
+  --ui `
+  --ui-hold-seconds -1 `
+  --output .\engine_auto_result.json `
+  --node-log .\engine_nodes.jsonl
+```
+
+`--ui-hold-seconds -1` keeps the UI server open until `Ctrl+C`. Use
+`--no-open-browser` when running in a headless shell.
+
 ## DeepResearch CLI
 
 ```powershell

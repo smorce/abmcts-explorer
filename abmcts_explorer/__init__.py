@@ -35,6 +35,7 @@ from .profile_decider import (
     simple_profile_policy,
 )
 from .research_logger import DeepResearchLogger, ResearchLogEvent
+from .tree_visualizer import TreeVisualizerObserver, TreeVisualizerServer
 from .web_search import (
     SearXNGSearchClient,
     SearXNGSearchConfig,
@@ -72,6 +73,8 @@ __all__ = [
     "SearXNGSearchClient",
     "SearXNGSearchConfig",
     "TreeQuestBackend",
+    "TreeVisualizerObserver",
+    "TreeVisualizerServer",
     "WebSearchResponse",
     "WebSearchResult",
     "build_deep_research_prompt",

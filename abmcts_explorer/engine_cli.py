@@ -23,6 +23,7 @@ from .profile_decider import (
     RuleBasedProfileDecider,
     SearchDiagnostics,
 )
+from .tree_visualizer import TreeVisualizerObserver, TreeVisualizerServer
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,12 @@ def make_jsonl_action(path: Path) -> ActionSpec[EngineCliState]:
     return ActionSpec(name="jsonl_expand", generator=generate)
 
 
+def _write_node_log(path: Path, node_logs: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps(item, ensure_ascii=False) for item in node_logs]
+    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
 def build_config(
     args: argparse.Namespace,
     profile: SearchProfile | None = None,
@@ -137,13 +144,45 @@ def build_config(
 
 async def run_engine(args: argparse.Namespace) -> dict[str, Any]:
     action = make_jsonl_action(Path(args.input_jsonl)) if args.input_jsonl else make_demo_action()
+    observer = TreeVisualizerObserver(title=f"AB-MCTS: {args.task}") if args.ui else None
+    server = None
+    if observer is not None:
+        server = TreeVisualizerServer(observer, host=args.ui_host, port=args.ui_port)
+        args.ui_url = server.start(open_browser=not args.no_open_browser)
+        print(f"ui={args.ui_url}")
+
+    try:
+        if args.profile == "auto":
+            result = await run_engine_auto(args, action, observer=observer)
+        else:
+            result = await run_engine_single(args, action, observer=observer)
+
+        if args.node_log:
+            _write_node_log(Path(args.node_log), result["node_logs"])
+
+        if observer is not None and args.ui_hold_seconds != 0:
+            await _hold_ui(args.ui_hold_seconds)
+
+        return result
+    finally:
+        if server is not None:
+            server.stop()
+
+
+async def run_engine_single(
+    args: argparse.Namespace,
+    action: ActionSpec[EngineCliState],
+    *,
+    observer: TreeVisualizerObserver | None = None,
+) -> dict[str, Any]:
     if args.profile == "auto":
-        return await run_engine_auto(args, action)
+        raise ValueError("run_engine_single does not accept profile=auto.")
 
     explorer = ABMCTSExplorer[EngineCliState](
         task=args.task,
         actions=[action],
         config=build_config(args),
+        observer=observer,
     )
 
     if explorer.config.execution_mode == ExecutionMode.ASYNC_ASK_TELL:
@@ -166,12 +205,15 @@ async def run_engine(args: argparse.Namespace) -> dict[str, Any]:
             for index, (state, score) in enumerate(best)
         ],
         "history": explorer.history,
+        "node_logs": explorer.node_logs,
     }
 
 
 async def run_engine_auto(
     args: argparse.Namespace,
     action: ActionSpec[EngineCliState],
+    *,
+    observer: TreeVisualizerObserver | None = None,
 ) -> dict[str, Any]:
     decider = RuleBasedProfileDecider(
         ProfileDeciderConfig(
@@ -188,6 +230,7 @@ async def run_engine_auto(
         task=args.task,
         actions=[action],
         config=build_config(args, profile=profile, budget=args.epoch_budget),
+        observer=observer,
     )
 
     consumed = 0
@@ -195,6 +238,9 @@ async def run_engine_auto(
     decisions: list[ProfileDecision] = []
     diagnostics_history: list[SearchDiagnostics] = []
     history: list[dict[str, Any]] = []
+    node_logs: list[dict[str, Any]] = []
+    last_history_index = 0
+    last_node_log_index = 0
 
     while consumed < args.budget:
         epoch_budget = min(args.epoch_budget, args.budget - consumed)
@@ -205,7 +251,10 @@ async def run_engine_auto(
             best = await asyncio.to_thread(explorer.run, epoch_budget)
 
         consumed += epoch_budget
-        history.extend(explorer.history)
+        history.extend(explorer.history[last_history_index:])
+        node_logs.extend(explorer.node_logs[last_node_log_index:])
+        last_history_index = len(explorer.history)
+        last_node_log_index = len(explorer.node_logs)
 
         diagnostics = diagnose_best(
             best=best,
@@ -232,7 +281,10 @@ async def run_engine_auto(
                 task=args.task,
                 actions=[action],
                 config=build_config(args, profile=decision.profile, budget=args.epoch_budget),
+                observer=observer,
             )
+            last_history_index = 0
+            last_node_log_index = 0
 
     return {
         "task": args.task,
@@ -274,7 +326,15 @@ async def run_engine_auto(
             for item in diagnostics_history
         ],
         "history": history,
+        "node_logs": node_logs,
     }
+
+
+async def _hold_ui(seconds: int) -> None:
+    if seconds < 0:
+        while True:
+            await asyncio.sleep(3600)
+    await asyncio.sleep(seconds)
 
 
 def diagnose_best(
@@ -331,6 +391,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--best-k", type=int, default=2)
     parser.add_argument("--input-jsonl")
     parser.add_argument("--output")
+    parser.add_argument("--node-log")
+    parser.add_argument("--ui", action="store_true")
+    parser.add_argument("--ui-host", default="127.0.0.1")
+    parser.add_argument("--ui-port", type=int, default=8765)
+    parser.add_argument("--ui-hold-seconds", type=int, default=0)
+    parser.add_argument("--no-open-browser", action="store_true")
     return parser
 
 
