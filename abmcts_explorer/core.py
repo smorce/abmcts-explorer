@@ -662,6 +662,8 @@ class ABMCTSExplorer(Generic[StateT]):
         parent_state: StateT | None,
         context: ExplorerContext,
     ) -> StateT | None:
+        if context.metadata.get("force_root_parent"):
+            return None
         if parent_state is not None:
             return parent_state
         observer_parent = context.metadata.get("observer_parent_state")
@@ -674,11 +676,15 @@ class ABMCTSExplorer(Generic[StateT]):
         *,
         trial_index: int = 0,
     ) -> StateT | None:
-        if parent_state is not None:
-            return parent_state
+        if context.metadata.get("force_root_parent"):
+            return None
         action_parents = context.metadata.get("action_parent_states")
         if isinstance(action_parents, list) and action_parents:
             return action_parents[trial_index % len(action_parents)]
+        if "action_parent_state" in context.metadata:
+            return context.metadata.get("action_parent_state")
+        if parent_state is not None:
+            return parent_state
         action_parent = context.metadata.get("action_parent_state")
         return action_parent
 

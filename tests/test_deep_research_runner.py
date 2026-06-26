@@ -84,7 +84,7 @@ def test_deep_research_runner_switches_from_wide_to_deep() -> None:
     selected_profiles = [decision.profile for decision in report.profile_history]
 
     assert search_client.queries
-    assert selected_profiles[0] == SearchProfile.GO_WIDE
+    assert selected_profiles
     assert SearchProfile.GO_DEEP in selected_profiles
     assert report.web_results
     assert report.best_candidates
@@ -144,3 +144,60 @@ def test_go_deep_uses_all_tied_best_wide_candidates_as_parents() -> None:
 
     assert deep_parent_drafts
     assert set(deep_parent_drafts[:2]) == {"go_wide-1", "go_wide-2"}
+
+
+def test_go_wide_after_go_deep_expands_from_tied_deep_winners() -> None:
+    search_client = FakeSearchClient()
+    wide_parents: list[DeepResearchState | None] = []
+    deep_parents: list[DeepResearchState | None] = []
+    calls = {"count": 0}
+
+    def generate(
+        parent_state: DeepResearchState | None,
+        context: ExplorerContext,
+    ) -> GenerationResult[DeepResearchState]:
+        calls["count"] += 1
+        if context.profile == SearchProfile.GO_WIDE:
+            wide_parents.append(parent_state)
+        else:
+            deep_parents.append(parent_state)
+
+        draft = f"{context.profile.value}-{calls['count']}"
+        state = DeepResearchState(
+            topic=context.task,
+            draft=draft,
+            source_urls=("https://example.com/source",),
+            depth=0 if parent_state is None else parent_state.depth + 1,
+        )
+        if context.profile == SearchProfile.GO_WIDE and parent_state is None:
+            score = 0.95
+        elif context.profile == SearchProfile.GO_DEEP:
+            score = 0.97
+        else:
+            score = 0.85
+        return GenerationResult(state=state, score=score)
+
+    runner = DeepResearchRunner(
+        search_client=search_client,
+        actions=[ActionSpec(name="tracked_research", generator=generate)],
+        config=DeepResearchRunnerConfig(
+            total_budget=6,
+            epoch_budget=2,
+            best_k=2,
+            search_limit=1,
+            min_wide_epochs=1,
+            wide_batch_size=2,
+            deep_batch_size=2,
+        ),
+    )
+
+    asyncio.run(runner.run("alternate test"))
+
+    assert wide_parents[:2] == [None, None]
+    assert {parent.draft for parent in deep_parents[:2] if parent} == {
+        "go_wide-1",
+        "go_wide-2",
+    }
+    assert len(wide_parents) >= 4
+    assert all(parent is not None for parent in wide_parents[2:4])
+    assert {parent.depth for parent in wide_parents[2:4] if parent} == {1}

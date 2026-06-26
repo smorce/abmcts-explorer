@@ -116,9 +116,11 @@ def build_config(
     args: argparse.Namespace,
     profile: SearchProfile | None = None,
     budget: int | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> ExplorerConfig:
     profile = profile or SearchProfile(args.profile)
     budget = budget if budget is not None else args.budget
+    metadata = metadata if metadata is not None else {"cli": True}
     if profile == SearchProfile.GO_DEEP:
         return ExplorerConfig(
             algorithm_kind=AlgorithmKind.ABMCTSM,
@@ -128,7 +130,7 @@ def build_config(
             batch_size=args.batch_size,
             best_k=args.best_k,
             algo_kwargs={"max_process_workers": args.batch_size},
-            metadata={"cli": True},
+            metadata=metadata,
         )
 
     return ExplorerConfig(
@@ -138,7 +140,7 @@ def build_config(
         budget=budget,
         batch_size=args.batch_size,
         best_k=args.best_k,
-        metadata={"cli": True},
+        metadata=metadata,
     )
 
 
@@ -240,10 +242,16 @@ async def run_engine_auto(
         )
     )
     profile = SearchProfile.GO_WIDE
+    metadata: dict[str, Any] = {"cli": True, "force_root_parent": True}
     explorer = ABMCTSExplorer[EngineCliState](
         task=args.task,
         actions=[action],
-        config=build_config(args, profile=profile, budget=args.epoch_budget),
+        config=build_config(
+            args,
+            profile=profile,
+            budget=args.epoch_budget,
+            metadata=metadata,
+        ),
         observer=observer,
     )
 
@@ -278,7 +286,10 @@ async def run_engine_auto(
         diagnostics_history.append(diagnostics)
         decision = decider.decide(diagnostics, explorer.config.profile)
 
-        if len(decisions) < args.min_wide_epochs:
+        if (
+            explorer.config.profile == SearchProfile.GO_WIDE
+            and len(decisions) + 1 < args.min_wide_epochs
+        ):
             decision = ProfileDecision(
                 profile=SearchProfile.GO_WIDE,
                 confidence=max(decision.confidence, 0.75),
@@ -287,18 +298,43 @@ async def run_engine_auto(
                 suggested_batch_size=decision.suggested_batch_size,
                 suggested_budget=decision.suggested_budget,
             )
+        elif explorer.config.profile == SearchProfile.GO_DEEP:
+            decision = ProfileDecision(
+                profile=SearchProfile.GO_WIDE,
+                confidence=max(decision.confidence, 0.9),
+                reasons=decision.reasons,
+                explanation=decision.explanation + " | alternate_after_go_deep",
+                suggested_batch_size=args.batch_size,
+                suggested_budget=decision.suggested_budget,
+            )
+        elif explorer.config.profile == SearchProfile.GO_WIDE and best:
+            decision = ProfileDecision(
+                profile=SearchProfile.GO_DEEP,
+                confidence=max(decision.confidence, 0.9),
+                reasons=decision.reasons,
+                explanation=decision.explanation + " | alternate_after_go_wide",
+                suggested_batch_size=args.batch_size,
+                suggested_budget=decision.suggested_budget,
+            )
 
         decisions.append(decision)
 
         if consumed < args.budget and decision.profile != explorer.config.profile:
-            explorer = ABMCTSExplorer[EngineCliState](
-                task=args.task,
-                actions=[action],
-                config=build_config(args, profile=decision.profile, budget=args.epoch_budget),
-                observer=observer,
+            if best:
+                _, parent_states = tied_best_states(best)
+                set_seed_parent_metadata(metadata, parent_states)
+            else:
+                set_root_parent_metadata(metadata)
+
+            explorer.switch_config(
+                build_config(
+                    args,
+                    profile=decision.profile,
+                    budget=args.epoch_budget,
+                    metadata=metadata,
+                ),
+                preserve_tree=False,
             )
-            last_history_index = 0
-            last_node_log_index = 0
 
     return {
         "task": args.task,
@@ -342,6 +378,37 @@ async def run_engine_auto(
         "history": history,
         "node_logs": node_logs,
     }
+
+
+def tied_best_states(
+    best: list[tuple[EngineCliState, float]],
+) -> tuple[float, list[EngineCliState]]:
+    best_score = max(score for _, score in best)
+    return (
+        best_score,
+        [
+            state
+            for state, score in best
+            if abs(score - best_score) <= 1e-9
+        ],
+    )
+
+
+def set_seed_parent_metadata(
+    metadata: dict[str, Any],
+    parent_states: list[EngineCliState],
+) -> None:
+    metadata.pop("force_root_parent", None)
+    metadata["action_parent_state"] = parent_states[0]
+    metadata["action_parent_states"] = parent_states
+    metadata["observer_parent_state"] = parent_states[0]
+
+
+def set_root_parent_metadata(metadata: dict[str, Any]) -> None:
+    metadata["force_root_parent"] = True
+    metadata.pop("action_parent_state", None)
+    metadata.pop("action_parent_states", None)
+    metadata.pop("observer_parent_state", None)
 
 
 async def _hold_ui(seconds: int) -> None:

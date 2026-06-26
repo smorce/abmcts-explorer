@@ -350,6 +350,7 @@ class DeepResearchRunner:
             },
         )
         metadata: dict[str, Any] = {"web_results": []}
+        self._set_root_parent_metadata(metadata)
         explorer = ABMCTSExplorer[DeepResearchState](
             task=topic,
             actions=self.actions,
@@ -427,13 +428,34 @@ class DeepResearchRunner:
                 current_profile=explorer.config.profile,
             )
 
-            if epoch_index < self.config.min_wide_epochs:
+            if (
+                explorer.config.profile == SearchProfile.GO_WIDE
+                and epoch_index + 1 < self.config.min_wide_epochs
+            ):
                 decision = ProfileDecision(
                     profile=SearchProfile.GO_WIDE,
                     confidence=max(decision.confidence, 0.75),
                     reasons=decision.reasons,
                     explanation=decision.explanation + " | forced_initial_go_wide",
                     suggested_batch_size=self.config.wide_batch_size,
+                    suggested_budget=decision.suggested_budget,
+                )
+            elif explorer.config.profile == SearchProfile.GO_DEEP:
+                decision = ProfileDecision(
+                    profile=SearchProfile.GO_WIDE,
+                    confidence=max(decision.confidence, 0.9),
+                    reasons=decision.reasons,
+                    explanation=decision.explanation + " | alternate_after_go_deep",
+                    suggested_batch_size=self.config.wide_batch_size,
+                    suggested_budget=decision.suggested_budget,
+                )
+            elif explorer.config.profile == SearchProfile.GO_WIDE and best:
+                decision = ProfileDecision(
+                    profile=SearchProfile.GO_DEEP,
+                    confidence=max(decision.confidence, 0.9),
+                    reasons=decision.reasons,
+                    explanation=decision.explanation + " | alternate_after_go_wide",
+                    suggested_batch_size=self.config.deep_batch_size,
                     suggested_budget=decision.suggested_budget,
                 )
 
@@ -452,32 +474,42 @@ class DeepResearchRunner:
 
             if decision.profile != explorer.config.profile:
                 if decision.profile == SearchProfile.GO_DEEP and best:
-                    best_score = max(score for _, score in best)
-                    deep_seed_states = [
-                        state
-                        for state, score in best
-                        if abs(score - best_score) <= 1e-9
-                    ]
-                    deep_seed_state = deep_seed_states[0]
-                    metadata["deep_seed_state"] = deep_seed_state
-                    metadata["action_parent_state"] = deep_seed_state
-                    metadata["action_parent_states"] = deep_seed_states
-                    metadata["observer_parent_state"] = deep_seed_state
+                    best_score, deep_seed_states = self._tied_best_states(best)
+                    self._set_seed_parent_metadata(
+                        metadata,
+                        states=deep_seed_states,
+                        seed_key="deep_seed_state",
+                    )
                     self.logger.log_event(
                         "deep_seed_selected",
                         {
                             "epoch_index": epoch_index,
                             "seed_count": len(deep_seed_states),
                             "seed_score": best_score,
-                            "seed_depth": deep_seed_state.depth,
-                            "seed_preview": deep_seed_state.draft[:240],
+                            "seed_depth": deep_seed_states[0].depth,
+                            "seed_preview": deep_seed_states[0].draft[:240],
+                        },
+                    )
+                elif decision.profile == SearchProfile.GO_WIDE and best:
+                    best_score, wide_parent_states = self._tied_best_states(best)
+                    self._set_seed_parent_metadata(
+                        metadata,
+                        states=wide_parent_states,
+                        seed_key="wide_seed_state",
+                    )
+                    metadata.pop("deep_seed_state", None)
+                    self.logger.log_event(
+                        "wide_parent_selected",
+                        {
+                            "epoch_index": epoch_index,
+                            "parent_count": len(wide_parent_states),
+                            "parent_score": best_score,
+                            "parent_depth": wide_parent_states[0].depth,
+                            "parent_preview": wide_parent_states[0].draft[:240],
                         },
                     )
                 else:
-                    metadata.pop("deep_seed_state", None)
-                    metadata.pop("action_parent_state", None)
-                    metadata.pop("action_parent_states", None)
-                    metadata.pop("observer_parent_state", None)
+                    self._set_root_parent_metadata(metadata)
 
                 self.logger.log_event(
                     "profile_switched",
@@ -547,6 +579,12 @@ class DeepResearchRunner:
                 metadata=metadata,
             )
 
+        if (
+            "action_parent_state" not in metadata
+            and "action_parent_states" not in metadata
+        ):
+            self._set_root_parent_metadata(metadata)
+
         return ExplorerConfig(
             algorithm_kind=AlgorithmKind.ABMCTSA,
             profile=SearchProfile.GO_WIDE,
@@ -556,6 +594,46 @@ class DeepResearchRunner:
             best_k=self.config.best_k,
             metadata=metadata,
         )
+
+    @staticmethod
+    def _tied_best_states(
+        best: list[tuple[DeepResearchState, float]],
+    ) -> tuple[float, list[DeepResearchState]]:
+        best_score = max(score for _, score in best)
+        return (
+            best_score,
+            [
+                state
+                for state, score in best
+                if abs(score - best_score) <= 1e-9
+            ],
+        )
+
+    @staticmethod
+    def _set_seed_parent_metadata(
+        metadata: dict[str, Any],
+        *,
+        states: list[DeepResearchState],
+        seed_key: str,
+    ) -> None:
+        metadata.pop("force_root_parent", None)
+        metadata.pop("wide_seed_state", None)
+        if seed_key != "deep_seed_state":
+            metadata.pop("deep_seed_state", None)
+        seed_state = states[0]
+        metadata[seed_key] = seed_state
+        metadata["action_parent_state"] = seed_state
+        metadata["action_parent_states"] = states
+        metadata["observer_parent_state"] = seed_state
+
+    @staticmethod
+    def _set_root_parent_metadata(metadata: dict[str, Any]) -> None:
+        metadata["force_root_parent"] = True
+        metadata.pop("deep_seed_state", None)
+        metadata.pop("wide_seed_state", None)
+        metadata.pop("action_parent_state", None)
+        metadata.pop("action_parent_states", None)
+        metadata.pop("observer_parent_state", None)
 
     def _refresh_web_results(
         self,

@@ -73,14 +73,18 @@ uv run python .\abmcts_engine.py `
 ## GO_DEEP Parent Selection
 
 `ABMCTSExplorer` supports seeded deep expansion through
-`ExplorerConfig.metadata["action_parent_states"]`. When this list is present
-and a generated trial has no parent from the backend tree, each batch item uses
-one seed parent in round-robin order.
+`ExplorerConfig.metadata["action_parent_states"]`. When this list is present,
+each batch item uses one seed parent in round-robin order, even if the backend
+tree selected another parent. `ExplorerConfig.metadata["force_root_parent"]`
+forces generated trials to attach to root.
 
 `DeepResearchRunner` uses this as a rule: when switching from `GO_WIDE` to
 `GO_DEEP`, all candidates tied for the highest score become deep parent
 candidates. If two or more depth-1 candidates have the same highest score, all
 of them are explored by `GO_DEEP`; they are not collapsed to a single winner.
+After `GO_DEEP` finishes one level, `DeepResearchRunner` switches back to
+`GO_WIDE` and expands broadly from all tied highest-score deep winners. This
+`GO_WIDE -> GO_DEEP -> GO_WIDE` cycle is repeated at any depth.
 
 ## DeepResearch CLI
 
