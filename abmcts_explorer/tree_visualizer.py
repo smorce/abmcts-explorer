@@ -164,7 +164,7 @@ class TreeVisualizerObserver(ExplorerObserver[Any]):
         value = value.strip()
         if len(value) <= limit:
             return value
-        return value[: limit - 1] + "…"
+        return value[: limit - 3] + "..."
 
 
 class TreeVisualizerServer:
@@ -293,9 +293,10 @@ def build_visualizer_html(title: str) -> str:
       font-family: "Segoe UI", "Noto Sans JP", system-ui, sans-serif;
     }}
     .shell {{
-      min-height: 100vh;
+      height: 100vh;
       display: grid;
       grid-template-rows: auto 1fr;
+      overflow: hidden;
     }}
     header {{
       display: flex;
@@ -344,8 +345,8 @@ def build_visualizer_html(title: str) -> str:
     svg {{
       display: block;
       width: 100%;
-      height: calc(100vh - 92px);
-      min-height: 620px;
+      height: 100%;
+      min-height: 0;
       background: white;
       cursor: grab;
     }}
@@ -396,14 +397,16 @@ def build_visualizer_html(title: str) -> str:
     .tooltip.visible {{ opacity: 1; }}
     .status {{
       position: absolute;
-      left: 28px;
-      bottom: 24px;
+      left: clamp(12px, 3vw, 28px);
+      bottom: clamp(12px, 3vh, 24px);
       max-width: min(520px, calc(100vw - 56px));
-      padding: 24px 30px;
+      max-height: min(30vh, 210px);
+      overflow: auto;
+      padding: clamp(14px, 2.5vh, 24px) clamp(18px, 3vw, 30px);
       background: white;
       border: 4px solid var(--red);
       border-radius: 8px;
-      font-size: clamp(20px, 3vw, 36px);
+      font-size: clamp(18px, 3vw, 34px);
       line-height: 1.35;
       font-weight: 800;
     }}
@@ -421,10 +424,8 @@ def build_visualizer_html(title: str) -> str:
         padding: 16px;
       }}
       .stats {{ grid-template-columns: repeat(2, 1fr); }}
-      svg {{ height: calc(100vh - 188px); min-height: 560px; }}
       .status {{
-        left: 16px;
-        bottom: 16px;
+        max-height: 24vh;
         padding: 16px 18px;
       }}
     }}
@@ -487,14 +488,24 @@ def build_visualizer_html(title: str) -> str:
         levels.get(depth).push(node);
       }}
       const width = svg.clientWidth || 1200;
+      const height = svg.clientHeight || 620;
+      const status = document.getElementById("status");
+      const statusReserve = Math.min(status.offsetHeight + 44, height * 0.42);
       const positions = new Map();
       const maxDepth = Math.max(...levels.keys());
+      const topPadding = height < 520 ? 56 : 80;
+      const bottomLimit = Math.max(topPadding + 96, height - statusReserve);
+      const depthGap = maxDepth > 0
+        ? Math.max(58, Math.min(96, (bottomLimit - topPadding) / maxDepth))
+        : 0;
       for (const [depth, row] of levels) {{
         row.sort((a, b) => a.id.localeCompare(b.id, undefined, {{ numeric: true }}));
-        const y = 80 + depth * 92;
+        const y = topPadding + depth * depthGap;
         row.forEach((node, index) => {{
-          const spacing = width / (row.length + 1);
-          positions.set(node.id, {{ x: spacing * (index + 1), y }});
+          const sidePadding = width < 760 ? 34 : 64;
+          const usableWidth = Math.max(120, width - sidePadding * 2);
+          const spacing = usableWidth / (row.length + 1);
+          positions.set(node.id, {{ x: sidePadding + spacing * (index + 1), y }});
         }});
       }}
       return {{ positions, maxDepth }};
