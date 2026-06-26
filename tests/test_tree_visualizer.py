@@ -11,15 +11,25 @@ from abmcts_explorer.tree_visualizer import TreeVisualizerObserver, TreeVisualiz
 def test_tree_visualizer_observer_records_node_logs() -> None:
     observer = TreeVisualizerObserver(title="tree smoke")
     state = EngineCliState(text="candidate", depth=0)
+    context = ExplorerContext(
+        task="visualizer smoke",
+        step_index=0,
+        profile=SearchProfile.GO_WIDE,
+    )
+
+    observer.on_trial_started(
+        parent_state=None,
+        context=context,
+        action_name="expand",
+        algorithm="abmctsa",
+    )
+
+    assert observer.active_node_ids == ["root"]
 
     observer.on_node_generated(
         parent_state=None,
         result=GenerationResult(state=state, score=0.72, metadata={"kind": "test"}),
-        context=ExplorerContext(
-            task="visualizer smoke",
-            step_index=0,
-            profile=SearchProfile.GO_WIDE,
-        ),
+        context=context,
         action_name="expand",
         algorithm="abmctsa",
     )
@@ -30,6 +40,7 @@ def test_tree_visualizer_observer_records_node_logs() -> None:
     assert logs[0].parent_id == "root"
     assert logs[0].score == 0.72
     assert logs[0].summary == "candidate"
+    assert observer.active_node_ids == []
 
 
 def test_tree_visualizer_server_serves_snapshot() -> None:

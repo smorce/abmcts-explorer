@@ -190,6 +190,16 @@ class SearchBackend(Protocol, Generic[StateT]):
 
 
 class ExplorerObserver(Protocol, Generic[StateT]):
+    def on_trial_started(
+        self,
+        *,
+        parent_state: StateT | None,
+        context: ExplorerContext,
+        action_name: str,
+        algorithm: str,
+    ) -> None:
+        ...
+
     def on_node_generated(
         self,
         *,
@@ -401,6 +411,7 @@ class ABMCTSExplorer(Generic[StateT]):
                 _action: ActionSpec[StateT] = action,
                 _action_name: str = name,
             ) -> tuple[StateT, float]:
+                self._notify_trial_started(parent_state, context, _action_name)
                 result = _action.run_sync(parent_state, context)
                 self._validate_score(result.score)
                 self._notify_node(parent_state, result, context, _action_name)
@@ -432,6 +443,7 @@ class ABMCTSExplorer(Generic[StateT]):
 
         for trial in trials:
             action = self.actions[trial.action]
+            self._notify_trial_started(trial.parent_state, context, trial.action)
             result = action.run_sync(trial.parent_state, context)
             self._validate_score(result.score)
             self.tree = self.backend.tell(
@@ -459,6 +471,7 @@ class ABMCTSExplorer(Generic[StateT]):
 
         async def run_trial(trial: Any) -> tuple[Any, GenerationResult[StateT]]:
             action = self.actions[trial.action]
+            self._notify_trial_started(trial.parent_state, context, trial.action)
             result = await action.run_async(trial.parent_state, context)
             return trial, result
 
@@ -597,6 +610,22 @@ class ABMCTSExplorer(Generic[StateT]):
         self.observer.on_node_generated(
             parent_state=parent_state,
             result=result,
+            context=context,
+            action_name=action_name,
+            algorithm=self.config.algorithm_kind.value,
+        )
+
+    def _notify_trial_started(
+        self,
+        parent_state: StateT | None,
+        context: ExplorerContext,
+        action_name: str,
+    ) -> None:
+        if self.observer is None:
+            return
+
+        self.observer.on_trial_started(
+            parent_state=parent_state,
             context=context,
             action_name=action_name,
             algorithm=self.config.algorithm_kind.value,

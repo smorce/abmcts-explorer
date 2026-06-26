@@ -39,6 +39,8 @@ class TreeVisualizerObserver(ExplorerObserver[Any]):
         self._node_logs: list[TreeNodeLog] = []
         self._run_events: list[dict[str, Any]] = []
         self._subscribers: list[queue.Queue[dict[str, Any]]] = []
+        self._active_counts: dict[str, int] = {}
+        self._active_actions: dict[str, str] = {}
         self._next_node_number = 1
 
     @property
@@ -50,6 +52,38 @@ class TreeVisualizerObserver(ExplorerObserver[Any]):
     def run_events(self) -> list[dict[str, Any]]:
         with self._lock:
             return list(self._run_events)
+
+    @property
+    def active_node_ids(self) -> list[str]:
+        with self._lock:
+            return [
+                node_id
+                for node_id, count in self._active_counts.items()
+                if count > 0
+            ]
+
+    def on_trial_started(
+        self,
+        *,
+        parent_state: Any | None,
+        context: ExplorerContext,
+        action_name: str,
+        algorithm: str,
+    ) -> None:
+        with self._lock:
+            parent_id = self._node_id_for_state(parent_state)
+            self._active_counts[parent_id] = self._active_counts.get(parent_id, 0) + 1
+            self._active_actions[parent_id] = action_name
+            self._publish(
+                {
+                    "type": "active",
+                    "active_node_ids": self._active_node_ids_unlocked(),
+                    "node_id": parent_id,
+                    "action": action_name,
+                    "profile": context.profile.value,
+                    "algorithm": algorithm,
+                }
+            )
 
     def on_node_generated(
         self,
@@ -63,7 +97,7 @@ class TreeVisualizerObserver(ExplorerObserver[Any]):
         with self._lock:
             node_id = f"n{self._next_node_number}"
             self._next_node_number += 1
-            parent_id = self._state_to_node.get(id(parent_state)) if parent_state is not None else "root"
+            parent_id = self._node_id_for_state(parent_state)
             self._state_to_node[id(result.state)] = node_id
             depth = 1 if parent_id == "root" else self._depth_for(parent_id) + 1
             node = TreeNodeLog(
@@ -82,7 +116,14 @@ class TreeVisualizerObserver(ExplorerObserver[Any]):
                 created_at=time.time(),
             )
             self._node_logs.append(node)
+            self._deactivate_unlocked(parent_id)
             self._publish({"type": "node", "node": asdict(node)})
+            self._publish(
+                {
+                    "type": "active",
+                    "active_node_ids": self._active_node_ids_unlocked(),
+                }
+            )
 
     def on_run_event(self, event: dict[str, Any]) -> None:
         with self._lock:
@@ -98,6 +139,7 @@ class TreeVisualizerObserver(ExplorerObserver[Any]):
                     "title": self.title,
                     "nodes": [asdict(node) for node in self._node_logs],
                     "events": list(self._run_events),
+                    "active_node_ids": self._active_node_ids_unlocked(),
                 }
             )
             self._subscribers.append(stream)
@@ -116,6 +158,26 @@ class TreeVisualizerObserver(ExplorerObserver[Any]):
     def _publish(self, payload: dict[str, Any]) -> None:
         for subscriber in list(self._subscribers):
             subscriber.put(payload)
+
+    def _node_id_for_state(self, state: Any | None) -> str:
+        if state is None:
+            return "root"
+        return self._state_to_node.get(id(state), "root")
+
+    def _active_node_ids_unlocked(self) -> list[str]:
+        return [
+            node_id
+            for node_id, count in self._active_counts.items()
+            if count > 0
+        ]
+
+    def _deactivate_unlocked(self, node_id: str) -> None:
+        count = self._active_counts.get(node_id, 0)
+        if count <= 1:
+            self._active_counts.pop(node_id, None)
+            self._active_actions.pop(node_id, None)
+            return
+        self._active_counts[node_id] = count - 1
 
     def _depth_for(self, node_id: str | None) -> int:
         if node_id is None or node_id == "root":
@@ -219,6 +281,7 @@ class TreeVisualizerServer:
                             "title": observer.title,
                             "nodes": [asdict(node) for node in observer.node_logs],
                             "events": observer.run_events,
+                            "active_node_ids": observer.active_node_ids,
                         }
                     )
                     return
@@ -402,6 +465,28 @@ def build_visualizer_html(title: str) -> str:
       stroke-width: 2;
       transition: r .18s ease, filter .18s ease;
     }}
+    .node .pulse {{
+      fill: none;
+      stroke: var(--red);
+      stroke-width: 3;
+      opacity: 0;
+      transform-origin: center;
+      animation: radarPulse 1.45s ease-out infinite;
+    }}
+    .node .pulse.two {{
+      animation-delay: .48s;
+    }}
+    .node .pulse.three {{
+      animation-delay: .96s;
+    }}
+    .node:not(.active) .pulse {{
+      display: none;
+    }}
+    .node.active circle {{
+      stroke: var(--red);
+      stroke-width: 3;
+      filter: drop-shadow(0 8px 14px rgba(196,0,0,.20));
+    }}
     .node:hover circle {{
       r: 25;
       filter: drop-shadow(0 6px 10px rgba(0,0,0,.18));
@@ -453,6 +538,19 @@ def build_visualizer_html(title: str) -> str:
       color: var(--muted);
       font-size: 13px;
       font-weight: 600;
+    }}
+    @keyframes radarPulse {{
+      0% {{
+        r: 25;
+        opacity: .45;
+      }}
+      68% {{
+        opacity: .16;
+      }}
+      100% {{
+        r: 48;
+        opacity: 0;
+      }}
     }}
     @media (max-width: 820px) {{
       header {{
@@ -512,6 +610,7 @@ def build_visualizer_html(title: str) -> str:
 
     const svg = document.getElementById("tree");
     const tooltip = document.getElementById("tooltip");
+    const activeNodeIds = new Set();
     const state = {{ scale: 1, offsetX: 0, offsetY: 0, dragging: false, startX: 0, startY: 0 }};
 
     function colorFor(node) {{
@@ -590,10 +689,17 @@ def build_visualizer_html(title: str) -> str:
         const pos = positions.get(node.id);
         if (!pos) continue;
         const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
-        group.setAttribute("class", "node");
+        group.setAttribute("class", activeNodeIds.has(node.id) ? "node active" : "node");
         group.setAttribute("transform", `translate(${{pos.x}} ${{pos.y}})`);
         group.addEventListener("mousemove", event => showTooltip(event, node));
         group.addEventListener("mouseleave", hideTooltip);
+
+        for (const pulseClass of ["pulse", "pulse two", "pulse three"]) {{
+          const pulse = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+          pulse.setAttribute("class", pulseClass);
+          pulse.setAttribute("r", "25");
+          group.appendChild(pulse);
+        }}
 
         const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
         circle.setAttribute("r", "23");
@@ -646,11 +752,22 @@ def build_visualizer_html(title: str) -> str:
     function applyMessage(message) {{
       if (message.type === "snapshot") {{
         for (const node of message.nodes || []) nodes.set(node.id, node);
+        syncActiveNodes(message.active_node_ids || []);
       }}
       if (message.type === "node") {{
         nodes.set(message.node.id, message.node);
       }}
+      if (message.type === "active") {{
+        syncActiveNodes(message.active_node_ids || []);
+      }}
       render();
+    }}
+
+    function syncActiveNodes(nodeIds) {{
+      activeNodeIds.clear();
+      for (const nodeId of nodeIds) {{
+        activeNodeIds.add(nodeId);
+      }}
     }}
 
     svg.addEventListener("wheel", event => {{
@@ -691,7 +808,8 @@ def build_visualizer_html(title: str) -> str:
       applyMessage({{
         type: "snapshot",
         nodes: snapshot.nodes || [],
-        events: snapshot.events || []
+        events: snapshot.events || [],
+        active_node_ids: snapshot.active_node_ids || []
       }});
     }}
 
