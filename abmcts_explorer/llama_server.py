@@ -186,7 +186,7 @@ class LlamaServerEnvConfig:
             top_k=_get_optional_int(os.getenv("LLAMA_SERVER_TOP_K")),
             min_p=_get_optional_float(os.getenv("LLAMA_SERVER_MIN_P")),
             max_tokens=int(os.getenv("LLAMA_SERVER_MAX_TOKENS", "1000")),
-            timeout_seconds=float(os.getenv("LLAMA_SERVER_TIMEOUT_SECONDS", "15")),
+            timeout_seconds=float(os.getenv("LLAMA_SERVER_TIMEOUT_SECONDS", "250")),
             max_retries=int(os.getenv("LLAMA_SERVER_MAX_RETRIES", "5")),
             retry_base_delay_seconds=float(os.getenv("LLAMA_SERVER_RETRY_BASE_SECONDS", "0.8")),
             retry_max_delay_seconds=float(os.getenv("LLAMA_SERVER_RETRY_MAX_SECONDS", "8.0")),

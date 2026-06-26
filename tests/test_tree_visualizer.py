@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from urllib.request import urlopen
 
 from abmcts_explorer.core import ExplorerContext, GenerationResult, SearchProfile
@@ -66,3 +67,21 @@ def test_tree_visualizer_server_serves_snapshot() -> None:
     assert payload["title"] == "server smoke"
     assert payload["nodes"] == []
     assert payload["events"][0]["event_type"] == "run_finished"
+
+
+def test_tree_visualizer_server_ignores_abrupt_client_disconnect() -> None:
+    observer = TreeVisualizerObserver(title="disconnect smoke")
+    server = TreeVisualizerServer(observer, port=0)
+    url = server.start(open_browser=False)
+    host, port = server._server.server_address
+
+    try:
+        sock = socket.create_connection((host, port))
+        sock.close()
+
+        with urlopen(url + "snapshot", timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.stop()
+
+    assert payload["title"] == "disconnect smoke"

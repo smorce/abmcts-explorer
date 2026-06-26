@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import queue
+import sys
 import threading
 import time
 import webbrowser
@@ -12,6 +13,20 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .core import ExplorerContext, ExplorerObserver, GenerationResult
+
+_CLIENT_DISCONNECT_ERRORS = (
+    BrokenPipeError,
+    ConnectionAbortedError,
+    ConnectionError,
+    ConnectionResetError,
+)
+
+
+class _QuietThreadingHTTPServer(ThreadingHTTPServer):
+    def handle_error(self, request: Any, client_address: tuple[str, int]) -> None:
+        if isinstance(sys.exc_info()[1], _CLIENT_DISCONNECT_ERRORS):
+            return
+        super().handle_error(request, client_address)
 
 
 @dataclass(frozen=True)
@@ -267,6 +282,12 @@ class TreeVisualizerServer:
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
 
+            def handle_one_request(self) -> None:
+                try:
+                    super().handle_one_request()
+                except _CLIENT_DISCONNECT_ERRORS:
+                    pass
+
             def do_GET(self) -> None:
                 path = urlparse(self.path).path
                 if path == "/":
@@ -319,12 +340,12 @@ class TreeVisualizerServer:
                         line = "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
                         self.wfile.write(line.encode("utf-8"))
                         self.wfile.flush()
-                except (BrokenPipeError, ConnectionError, queue.Empty):
+                except (*_CLIENT_DISCONNECT_ERRORS, queue.Empty):
                     pass
                 finally:
                     observer.unsubscribe(stream)
 
-        return ThreadingHTTPServer((self.host, self.port), Handler)
+        return _QuietThreadingHTTPServer((self.host, self.port), Handler)
 
 
 def build_visualizer_html(title: str) -> str:

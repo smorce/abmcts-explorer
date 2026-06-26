@@ -370,8 +370,9 @@ uv run python .\ABMCTSExplorer\deep_research_cli.py `
   --topic "調査テーマ" `
   --model "Qwen3.6-27B-MTP-GGUF-UD-Q4_K_XL" `
   --total-budget 1000 `
-  --epoch-budget 25 `
-  --wide-batch-size 16 `
+  --epoch-budget 10 `
+  --min-wide-epochs 1 `
+  --wide-batch-size 10 `
   --deep-batch-size 5 `
   --best-k 8 `
   --search-limit 8 `
@@ -396,8 +397,9 @@ uv run python .\ABMCTSExplorer\deep_research_cli.py `
   --topic "EUのプライバシー対応の現状と日本の各企業がどんな主要な対応をしているのか？" `
   --model "Qwen3.6-27B-MTP-GGUF-UD-Q4_K_XL" `
   --total-budget 1000 `
-  --epoch-budget 25 `
-  --wide-batch-size 16 `
+  --epoch-budget 10 `
+  --min-wide-epochs 1 `
+  --wide-batch-size 10 `
   --deep-batch-size 5 `
   --best-k 8 `
   --search-limit 8 `

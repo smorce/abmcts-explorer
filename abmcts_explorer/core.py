@@ -63,7 +63,7 @@ def call_llamas_server(
     temperature: float = 0.7,
     max_tokens: int = 2048,
     server_url: str | None = None,
-    timeout_sec: int = 120,
+    timeout_sec: int = 250,
     **kwargs: Any,
 ) -> str:
     config = LlamaServerEnvConfig.from_env().with_overrides(
