@@ -465,6 +465,9 @@ def build_visualizer_html(title: str) -> str:
       stroke-width: 2;
       transition: r .18s ease, filter .18s ease;
     }}
+    .node {{
+      cursor: pointer;
+    }}
     .node .pulse {{
       fill: none;
       stroke: var(--red);
@@ -759,6 +762,7 @@ def build_visualizer_html(title: str) -> str:
         const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
         group.setAttribute("class", activeNodeIds.has(node.id) ? "node active" : "node");
         group.setAttribute("transform", `translate(${{pos.x}} ${{pos.y}})`);
+        group.addEventListener("pointerdown", event => event.stopPropagation());
         group.addEventListener("mousemove", event => showTooltip(event, node));
         group.addEventListener("mouseleave", hideTooltip);
         group.addEventListener("click", event => {{
@@ -957,8 +961,10 @@ def build_visualizer_html(title: str) -> str:
       render();
     }});
     svg.addEventListener("pointerup", () => state.dragging = false);
-    svg.addEventListener("click", () => {{
-      nodeDetail.hidden = true;
+    svg.addEventListener("click", event => {{
+      if (event.target === svg) {{
+        nodeDetail.hidden = true;
+      }}
     }});
     nodeDetail.addEventListener("click", event => event.stopPropagation());
     nodeDetailClose.addEventListener("click", () => {{
