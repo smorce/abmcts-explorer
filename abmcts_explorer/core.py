@@ -536,7 +536,13 @@ class ABMCTSExplorer(Generic[StateT]):
         return self.best(self.config.best_k)
 
     def best(self, k: int = 1) -> list[tuple[StateT, float]]:
-        return self.backend.top_k(self.tree, k=k)
+        for candidate_k in range(k, 0, -1):
+            try:
+                return self.backend.top_k(self.tree, k=candidate_k)
+            except RuntimeError as exc:
+                if "cannot extract top" not in str(exc):
+                    raise
+        return []
 
     def switch_config(
         self,

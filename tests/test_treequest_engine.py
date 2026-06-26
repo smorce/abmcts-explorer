@@ -76,6 +76,26 @@ def test_abmctsm_ask_tell_runs_with_real_treequest_backend() -> None:
     assert explorer.history[-1]["event_type"] == "ask_tell_batch"
 
 
+def test_best_reduces_k_when_tree_has_fewer_states() -> None:
+    explorer = ABMCTSExplorer[str](
+        task="small tree",
+        actions=[make_counter_action()],
+        config=ExplorerConfig(
+            algorithm_kind=AlgorithmKind.ABMCTSA,
+            profile=SearchProfile.GO_WIDE,
+            execution_mode=ExecutionMode.ASK_TELL,
+            budget=1,
+            batch_size=1,
+            best_k=3,
+        ),
+    )
+
+    explorer.ask_tell_batch(1)
+    best = explorer.best(3)
+
+    assert len(best) == 1
+
+
 def test_async_ask_tell_runs_with_real_treequest_backend() -> None:
     explorer = ABMCTSExplorer[str](
         task="deterministic async search",
