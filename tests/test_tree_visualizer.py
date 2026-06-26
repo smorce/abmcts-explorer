@@ -45,6 +45,15 @@ def test_tree_visualizer_observer_records_node_logs() -> None:
 
 def test_tree_visualizer_server_serves_snapshot() -> None:
     observer = TreeVisualizerObserver(title="server smoke")
+    observer.on_run_event(
+        {
+            "event_type": "run_finished",
+            "step_index": 1,
+            "profile": "go_wide",
+            "algorithm": "abmctsa",
+            "payload": {"best_count": 1},
+        }
+    )
     server = TreeVisualizerServer(observer, port=0)
     url = server.start(open_browser=False)
 
@@ -56,3 +65,4 @@ def test_tree_visualizer_server_serves_snapshot() -> None:
 
     assert payload["title"] == "server smoke"
     assert payload["nodes"] == []
+    assert payload["events"][0]["event_type"] == "run_finished"

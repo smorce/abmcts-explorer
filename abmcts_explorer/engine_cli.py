@@ -157,6 +157,20 @@ async def run_engine(args: argparse.Namespace) -> dict[str, Any]:
         else:
             result = await run_engine_single(args, action, observer=observer)
 
+        if observer is not None:
+            observer.on_run_event(
+                {
+                    "event_type": "run_finished",
+                    "step_index": result.get("budget", args.budget),
+                    "profile": str(result.get("profile", args.profile)),
+                    "algorithm": str(result.get("algorithm", result.get("last_executed_profile", ""))),
+                    "payload": {
+                        "best_count": len(result.get("best", [])),
+                        "node_count": len(result.get("node_logs", [])),
+                    },
+                }
+            )
+
         if args.node_log:
             _write_node_log(Path(args.node_log), result["node_logs"])
 

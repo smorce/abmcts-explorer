@@ -461,6 +461,22 @@ class DeepResearchRunner:
                 "report_chars": len(report),
             },
         )
+        if self.observer is not None:
+            self.observer.on_run_event(
+                {
+                    "event_type": "run_finished",
+                    "step_index": consumed,
+                    "profile": profile_history[-1].profile.value
+                    if profile_history
+                    else SearchProfile.GO_WIDE.value,
+                    "algorithm": "deep_research",
+                    "payload": {
+                        "web_result_count": len(web_results),
+                        "best_candidate_count": len(best),
+                        "report_chars": len(report),
+                    },
+                }
+            )
         return DeepResearchReport(
             topic=topic,
             report=report,

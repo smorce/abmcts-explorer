@@ -611,6 +611,8 @@ def build_visualizer_html(title: str) -> str:
     const svg = document.getElementById("tree");
     const tooltip = document.getElementById("tooltip");
     const activeNodeIds = new Set();
+    let runCompleted = false;
+    let runFinishedPayload = null;
     const state = {{ scale: 1, offsetX: 0, offsetY: 0, dragging: false, startX: 0, startY: 0 }};
 
     function colorFor(node) {{
@@ -725,9 +727,36 @@ def build_visualizer_html(title: str) -> str:
       document.getElementById("maxDepth").textContent = String(maxDepth);
       document.getElementById("profile").textContent = best ? best.profile : "waiting";
       const status = document.getElementById("status");
-      status.innerHTML = best
-        ? `&#33391;&#12356;&#35299;&#12408;&#25506;&#32034;&#20013;<small>best=${{Number(best.score).toFixed(3)}} / action=${{best.action}}</small>`
-        : `&#25506;&#32034;&#24453;&#27231;&#20013;<small>&#12494;&#12540;&#12489;&#12395; hover &#12377;&#12427;&#12392;&#35443;&#32048;&#12434;&#34920;&#31034;&#12375;&#12414;&#12377;</small>`;
+      if (runCompleted && best) {{
+        const finalPath = pathFor(best)
+          .map(node => `${{node.label || node.id}}(${{node.score == null ? "-" : Number(node.score).toFixed(2)}})`)
+          .join(" -> ");
+        status.innerHTML =
+          `&#25506;&#32034;&#23436;&#20102;<small>best=${{Number(best.score).toFixed(3)}} / final path: ${{escapeHtml(finalPath)}}</small>`;
+      }} else {{
+        status.innerHTML = best
+          ? `&#33391;&#12356;&#35299;&#12408;&#25506;&#32034;&#20013;<small>best=${{Number(best.score).toFixed(3)}} / action=${{best.action}}</small>`
+          : `&#25506;&#32034;&#24453;&#27231;&#20013;<small>&#12494;&#12540;&#12489;&#12395; hover &#12377;&#12427;&#12392;&#35443;&#32048;&#12434;&#34920;&#31034;&#12375;&#12414;&#12377;</small>`;
+      }}
+    }}
+
+    function pathFor(node) {{
+      const path = [];
+      let cursor = node;
+      while (cursor) {{
+        path.unshift(cursor);
+        cursor = nodes.get(cursor.parent_id);
+      }}
+      return path;
+    }}
+
+    function escapeHtml(value) {{
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
     }}
 
     function showTooltip(event, node) {{
@@ -752,6 +781,7 @@ def build_visualizer_html(title: str) -> str:
     function applyMessage(message) {{
       if (message.type === "snapshot") {{
         for (const node of message.nodes || []) nodes.set(node.id, node);
+        for (const event of message.events || []) handleRunEvent(event);
         syncActiveNodes(message.active_node_ids || []);
       }}
       if (message.type === "node") {{
@@ -760,7 +790,24 @@ def build_visualizer_html(title: str) -> str:
       if (message.type === "active") {{
         syncActiveNodes(message.active_node_ids || []);
       }}
+      if (message.type === "run_event") {{
+        handleRunEvent(message.event);
+      }}
       render();
+    }}
+
+    function handleRunEvent(event) {{
+      if (!event || !event.event_type) return;
+      if (event.event_type === "run_started") {{
+        runCompleted = false;
+        runFinishedPayload = null;
+      }}
+      if (event.event_type === "run_finished") {{
+        runCompleted = true;
+        runFinishedPayload = event.payload || {{}};
+        syncActiveNodes([]);
+        setConnectionState("connected", "\u5b8c\u4e86");
+      }}
     }}
 
     function syncActiveNodes(nodeIds) {{
