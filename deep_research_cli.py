@@ -17,7 +17,10 @@ from abmcts_explorer import (
 from abmcts_explorer.tree_visualizer import TreeVisualizerObserver, TreeVisualizerServer
 
 
-def build_actions(model: str) -> list[ActionSpec[DeepResearchState]]:
+def build_actions(model: str, *, max_tokens: int | None = None) -> list[ActionSpec[DeepResearchState]]:
+    wide_tokens = max_tokens or 2200
+    reject_tokens = max_tokens or 2600
+    synthesis_tokens = max_tokens or 3600
     return [
         ActionSpec[DeepResearchState](
             name="wide_hypothesis_search",
@@ -26,7 +29,7 @@ def build_actions(model: str) -> list[ActionSpec[DeepResearchState]]:
             parser=parse_deep_research_state,
             scorer=score_deep_research_state,
             temperature=0.75,
-            max_tokens=2200,
+            max_tokens=wide_tokens,
         ),
         ActionSpec[DeepResearchState](
             name="counterevidence_and_rejection",
@@ -35,7 +38,7 @@ def build_actions(model: str) -> list[ActionSpec[DeepResearchState]]:
             parser=parse_deep_research_state,
             scorer=score_deep_research_state,
             temperature=0.45,
-            max_tokens=2600,
+            max_tokens=reject_tokens,
         ),
         ActionSpec[DeepResearchState](
             name="deep_synthesis",
@@ -44,7 +47,7 @@ def build_actions(model: str) -> list[ActionSpec[DeepResearchState]]:
             parser=parse_deep_research_state,
             scorer=score_deep_research_state,
             temperature=0.2,
-            max_tokens=3600,
+            max_tokens=synthesis_tokens,
         ),
     ]
 
@@ -63,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-wide-epochs", type=int, default=3)
     parser.add_argument("--wide-batch-size", type=int, default=16)
     parser.add_argument("--deep-batch-size", type=int, default=5)
+    parser.add_argument("--action-max-tokens", type=int)
     parser.add_argument("--report-max-tokens", type=int, default=8192)
     parser.add_argument("--output-dir", default="deep_research_run")
     parser.add_argument("--no-final-llm-report", action="store_true")
@@ -85,7 +89,7 @@ async def run(args: argparse.Namespace) -> dict[str, Path]:
 
     try:
         runner = DeepResearchRunner(
-            actions=build_actions(args.model),
+            actions=build_actions(args.model, max_tokens=args.action_max_tokens),
             config=DeepResearchRunnerConfig(
                 total_budget=args.total_budget,
                 epoch_budget=args.epoch_budget,
