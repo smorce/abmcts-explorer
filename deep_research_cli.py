@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 from pathlib import Path
 
 from abmcts_explorer import (
@@ -13,6 +14,7 @@ from abmcts_explorer import (
     parse_deep_research_state,
     score_deep_research_state,
 )
+from abmcts_explorer.tree_visualizer import TreeVisualizerObserver, TreeVisualizerServer
 
 
 def build_actions(model: str) -> list[ActionSpec[DeepResearchState]]:
@@ -64,54 +66,86 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report-max-tokens", type=int, default=8192)
     parser.add_argument("--output-dir", default="deep_research_run")
     parser.add_argument("--no-final-llm-report", action="store_true")
+    parser.add_argument("--ui", action="store_true")
+    parser.add_argument("--ui-host", default="127.0.0.1")
+    parser.add_argument("--ui-port", type=int, default=8765)
+    parser.add_argument("--ui-hold-seconds", type=int, default=0)
+    parser.add_argument("--no-open-browser", action="store_true")
     return parser
 
 
 async def run(args: argparse.Namespace) -> dict[str, Path]:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    observer = TreeVisualizerObserver(title=f"DeepResearch: {args.topic}") if args.ui else None
+    server = None
+    if observer is not None:
+        server = TreeVisualizerServer(observer, host=args.ui_host, port=args.ui_port)
+        print(f"ui={server.start(open_browser=not args.no_open_browser)}")
 
-    runner = DeepResearchRunner(
-        actions=build_actions(args.model),
-        config=DeepResearchRunnerConfig(
-            total_budget=args.total_budget,
-            epoch_budget=args.epoch_budget,
-            best_k=args.best_k,
-            search_limit=args.search_limit,
-            min_wide_epochs=args.min_wide_epochs,
-            wide_batch_size=args.wide_batch_size,
-            deep_batch_size=args.deep_batch_size,
-            report_model=None if args.no_final_llm_report else args.model,
-            report_max_tokens=args.report_max_tokens,
-        ),
-    )
-    result = await runner.run(args.topic)
+    try:
+        runner = DeepResearchRunner(
+            actions=build_actions(args.model),
+            config=DeepResearchRunnerConfig(
+                total_budget=args.total_budget,
+                epoch_budget=args.epoch_budget,
+                best_k=args.best_k,
+                search_limit=args.search_limit,
+                min_wide_epochs=args.min_wide_epochs,
+                wide_batch_size=args.wide_batch_size,
+                deep_batch_size=args.deep_batch_size,
+                report_model=None if args.no_final_llm_report else args.model,
+                report_max_tokens=args.report_max_tokens,
+            ),
+            observer=observer,
+        )
+        result = await runner.run(args.topic)
 
-    report_path = output_dir / "report.md"
-    profile_path = output_dir / "profile_history.md"
-    sources_path = output_dir / "sources.md"
+        report_path = output_dir / "report.md"
+        profile_path = output_dir / "profile_history.md"
+        sources_path = output_dir / "sources.md"
+        node_log_path = output_dir / "node_logs.jsonl"
 
-    report_path.write_text(result.report, encoding="utf-8")
-    profile_path.write_text(
-        "\n".join(
-            f"- {index + 1}: {decision.profile.value} "
-            f"confidence={decision.confidence:.2f} {decision.explanation}"
-            for index, decision in enumerate(result.profile_history)
-        ),
-        encoding="utf-8",
-    )
-    sources_path.write_text(
-        "\n".join(f"- [{item.title}]({item.url})" for item in result.web_results),
-        encoding="utf-8",
-    )
-    log_paths = result.logger.save(output_dir / "logs") if result.logger else {}
+        report_path.write_text(result.report, encoding="utf-8")
+        profile_path.write_text(
+            "\n".join(
+                f"- {index + 1}: {decision.profile.value} "
+                f"confidence={decision.confidence:.2f} {decision.explanation}"
+                for index, decision in enumerate(result.profile_history)
+            ),
+            encoding="utf-8",
+        )
+        sources_path.write_text(
+            "\n".join(f"- [{item.title}]({item.url})" for item in result.web_results),
+            encoding="utf-8",
+        )
+        node_log_path.write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False) for item in result.node_logs)
+            + ("\n" if result.node_logs else ""),
+            encoding="utf-8",
+        )
+        log_paths = result.logger.save(output_dir / "logs") if result.logger else {}
 
-    return {
-        "report": report_path,
-        "profile_history": profile_path,
-        "sources": sources_path,
-        **log_paths,
-    }
+        if observer is not None and args.ui_hold_seconds != 0:
+            await _hold_ui(args.ui_hold_seconds)
+
+        return {
+            "report": report_path,
+            "profile_history": profile_path,
+            "sources": sources_path,
+            "node_logs": node_log_path,
+            **log_paths,
+        }
+    finally:
+        if server is not None:
+            server.stop()
+
+
+async def _hold_ui(seconds: int) -> None:
+    if seconds < 0:
+        while True:
+            await asyncio.sleep(3600)
+    await asyncio.sleep(seconds)
 
 
 def main(argv: list[str] | None = None) -> int:

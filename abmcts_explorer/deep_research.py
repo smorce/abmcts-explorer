@@ -11,6 +11,7 @@ from .core import (
     ExecutionMode,
     ExplorerConfig,
     ExplorerContext,
+    ExplorerObserver,
     GenerationResult,
     SearchProfile,
     call_llamas_server,
@@ -56,6 +57,7 @@ class DeepResearchReport:
     diagnostics_history: list[SearchDiagnostics]
     profile_history: list[ProfileDecision]
     web_results: list[WebSearchResult]
+    node_logs: list[dict[str, Any]] = field(default_factory=list)
     logger: DeepResearchLogger | None = None
 
 
@@ -218,6 +220,7 @@ class DeepResearchRunner:
         report_builder: Callable[[str, list[tuple[DeepResearchState, float]]], str]
         | None = None,
         logger: DeepResearchLogger | None = None,
+        observer: ExplorerObserver[DeepResearchState] | None = None,
     ) -> None:
         self.search_client = search_client or SearXNGSearchClient()
         self.logger = logger or DeepResearchLogger()
@@ -230,6 +233,7 @@ class DeepResearchRunner:
             )
         )
         self.report_builder = report_builder
+        self.observer = observer
 
     def _wrap_actions(
         self,
@@ -336,6 +340,7 @@ class DeepResearchRunner:
             task=topic,
             actions=self.actions,
             config=self._config_for_profile(SearchProfile.GO_WIDE, metadata),
+            observer=self.observer,
         )
 
         consumed = 0
@@ -463,6 +468,7 @@ class DeepResearchRunner:
             diagnostics_history=diagnostics_history,
             profile_history=profile_history,
             web_results=web_results,
+            node_logs=explorer.node_logs,
             logger=self.logger,
         )
 
