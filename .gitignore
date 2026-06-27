@@ -1,15 +1,18 @@
-.venv/
+# Python-generated files
 __pycache__/
-.pytest_cache/
-*.py[cod]
-*.egg-info/
-dist/
+*.py[oc]
 build/
+dist/
+wheels/
+*.egg-info
 
-deep_research_logs/
-runs/
-deep_research_production_report.md
-engine_cli_smoke.json
-engine_cli_auto_smoke.json
-engine_result.json
-engine_auto_result.json
+# Virtual environments
+.venv
+
+.env
+outputs/
+logging/
+evals/
+
+.ipynb_checkpoints/
+notebook/

@@ -8,6 +8,7 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 15
+DEFAULT_SEARXNG_ENGINES: tuple[str, ...] = ("google", "bing", "brave", "yandex")
 
 
 @dataclass(frozen=True)
@@ -37,16 +38,17 @@ def parse_searxng_engines(raw: Optional[str]) -> list[str]:
 @dataclass(frozen=True)
 class SearXNGSearchConfig:
     base_url: str
-    engines: tuple[str, ...] = ()
+    engines: tuple[str, ...] = DEFAULT_SEARXNG_ENGINES
     language: str | None = None
     timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
 
     @classmethod
     def from_env(cls) -> SearXNGSearchConfig:
         language = os.getenv("SEARXNG_LANGUAGE", "").strip()
+        parsed_engines = parse_searxng_engines(os.getenv("SEARXNG_ENGINE"))
         return cls(
             base_url=os.getenv("SEARXNG_URL", "").strip().rstrip("/"),
-            engines=tuple(parse_searxng_engines(os.getenv("SEARXNG_ENGINE"))),
+            engines=tuple(parsed_engines) if parsed_engines else DEFAULT_SEARXNG_ENGINES,
             language=language or None,
             timeout_seconds=float(
                 os.getenv(

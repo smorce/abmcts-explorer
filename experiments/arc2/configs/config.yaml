@@ -1,0 +1,28 @@
+research_topic: "EUのプライバシー対応の現状と、日本の各企業が実施している主要な対応"
+max_num_nodes: 10
+checkpoint_path: null
+top_k: 5
+include_revise: true
+
+llm:
+  base_url: "http://127.0.0.1:1067"
+  model: "unsloth/Qwen3.6-27B-MTP-GGUF-UD-Q4_K_XL"
+  enable_thinking: false
+  temperature: 0.3
+  max_tokens: 30000
+
+search:
+  url: "http://127.0.0.1:4866"
+  engines: "google,bing,brave,yandex"
+  language: "ja"
+  max_results: 5
+
+algo:
+  class_name: "ABMCTSM"
+  batch_size: 5
+  params:
+    model_selection_strategy: "stack"
+
+hydra:
+  run:
+    dir: outputs/deepresearch/${algo.class_name}_${now:%Y-%m-%d_%H-%M-%S}
