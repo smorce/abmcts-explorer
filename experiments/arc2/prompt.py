@@ -15,6 +15,29 @@ ACTION_DESCRIPTIONS: dict[ResearchAction, str] = {
 }
 
 
+ACTION_QUERY_INSTRUCTIONS: dict[ResearchAction, str] = {
+    "new_angle": "親ノードの主張に引きずられず、指定観点から未探索の角度を広げる。",
+    "deepen": "親ノードの open_questions を具体的に検証できる検索にする。",
+    "criticize": "親ノードの主張の反証、弱点、矛盾、古い情報を探す。",
+    "revise": "親ノードの findings を解消する追加根拠や具体事例を探す。",
+}
+
+
+def query_planner_system_prompt() -> str:
+    return """
+あなたはDeepResearchの検索クエリ設計者です。
+次の探索アクションで使うWeb検索クエリを、日本語の短いキーワード列として設計してください。
+
+守ること:
+- 必ずJSONオブジェクトだけを返す。
+- 形式は {"queries": ["単語 単語 単語", "..."]}。
+- クエリは自然文や質問文にしない。
+- 各クエリは空白区切りで最大語数以内にする。
+- 必要な本数だけ返し、最大本数を無理に埋めない。
+- 同じ意味のクエリを重複させない。
+""".strip()
+
+
 def researcher_system_prompt(action: ResearchAction, perspective: str) -> str:
     action_description = ACTION_DESCRIPTIONS.get(action, ACTION_DESCRIPTIONS["deepen"])
     return f"""
@@ -73,7 +96,7 @@ def build_research_prompt(
     topic: str,
     action: ResearchAction,
     perspective: str,
-    search_query: str,
+    search_queries: list[str],
     sources: list[dict[str, Any]],
     parent_state: NodeState | None,
 ) -> str:
@@ -84,7 +107,9 @@ def build_research_prompt(
                 "action": parent_state.action,
                 "perspective": parent_state.perspective,
                 "text": parent_state.text,
+                "open_questions": parent_state.open_questions,
                 "findings": parent_state.findings,
+                "search_queries": parent_state.search_queries,
                 "score": parent_state.score,
             },
             ensure_ascii=False,
@@ -106,9 +131,9 @@ def build_research_prompt(
 {parent_summary}
 
 # 検索クエリ
-{search_query}
+{json.dumps(search_queries, ensure_ascii=False, indent=2)}
 
-# 検索結果
+# 検索結果（重複削除済み）
 {source_block}
 
 # 出力してほしい内容
@@ -116,6 +141,56 @@ def build_research_prompt(
 - 検索結果から得られる根拠
 - 反証・矛盾・限界
 - 次に深掘りすべき問い
+""".strip()
+
+
+def build_query_planner_prompt(
+    *,
+    topic: str,
+    action: ResearchAction,
+    perspective: str,
+    parent_state: NodeState | None,
+    max_queries: int,
+    max_words: int,
+) -> str:
+    if parent_state is None:
+        parent_summary = "親ノードはありません。初回探索として、概要を素早く掴むための広めのキーワード群を作ってください。"
+    else:
+        parent_summary = json.dumps(
+            {
+                "action": parent_state.action,
+                "perspective": parent_state.perspective,
+                "text": parent_state.text,
+                "open_questions": parent_state.open_questions,
+                "findings": parent_state.findings,
+                "search_queries": parent_state.search_queries,
+                "score": parent_state.score,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    return f"""
+# 調査テーマ
+{topic}
+
+# 次の探索アクション
+{action}: {ACTION_QUERY_INSTRUCTIONS.get(action, "")}
+
+# 観点
+{perspective}
+
+# 親ノード
+{parent_summary}
+
+# 制約
+- クエリ本数: 1〜{max_queries}本
+- 1クエリの最大語数: {max_words}語
+- 自然文は禁止。例: "GDPR 日本企業 DPO 導入" のような単語列にする。
+- root(親なし)では、概要把握・最新動向・主要プレイヤーなどを必要な範囲で分ける。
+
+# 出力JSON
+{{"queries": ["単語 単語 単語"]}}
 """.strip()
 
 

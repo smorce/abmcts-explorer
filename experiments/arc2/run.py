@@ -26,20 +26,25 @@ sys.path.insert(0, str(Path(__file__).parent))
 from logging_utils import ResearchLogger
 from prompt import (
     build_final_report_prompt,
+    build_query_planner_prompt,
     build_research_prompt,
     build_review_prompt,
     final_report_system_prompt,
+    query_planner_system_prompt,
     researcher_system_prompt,
     reviewer_system_prompt,
 )
 from utils import (
     DEFAULT_ACTIONS,
     NodeState,
-    build_search_query,
+    build_fallback_queries,
     choose_perspective,
     clamp01,
+    extract_open_questions,
     get_top_k,
     make_eval_results,
+    merge_and_dedupe_sources,
+    parse_query_plan,
     parse_review_payload,
     score_review,
     state_formatter_html,
@@ -122,25 +127,95 @@ def generate_fn(
     temperature: float,
     max_tokens: int,
     max_results: int,
+    max_queries: int,
+    max_query_words: int,
     research_logger: ResearchLogger | None = None,
 ) -> tuple[NodeState, float]:
     start_time = time.time()
+    max_queries = max(1, max_queries)
+    max_query_words = max(1, max_query_words)
     perspective = choose_perspective(parent_state, action)
-    search_query = build_search_query(topic, action, parent_state, perspective)
-
-    sources, search_success = web_search(search_query, max_results=max_results)
     parent_id = parent_state.node_id if parent_state is not None else None
     depth = 1 if parent_state is None else parent_state.depth + 1
 
+    planner_text = call_local_llm(
+        system_prompt=query_planner_system_prompt(),
+        user_prompt=build_query_planner_prompt(
+            topic=topic,
+            action=action,
+            perspective=perspective,
+            parent_state=parent_state,
+            max_queries=max_queries,
+            max_words=max_query_words,
+        ),
+        temperature=0.0,
+        max_tokens=max_tokens,
+        research_logger=research_logger,
+        node_id=parent_id,
+        action=action,
+        perspective=perspective,
+        role="planner",
+    )
+    search_queries = parse_query_plan(
+        planner_text,
+        max_queries=max_queries,
+        max_words=max_query_words,
+    )
+    if not search_queries:
+        search_queries = build_fallback_queries(
+            topic,
+            action,
+            parent_state,
+            perspective,
+            max_queries=max_queries,
+            max_words=max_query_words,
+        )
+
+    per_query_results: list[list[dict[str, Any]]] = []
+    search_successes: list[bool] = []
+    for query_index, search_query in enumerate(search_queries, start=1):
+        query_sources, query_success = web_search(
+            search_query,
+            max_results=max_results,
+        )
+        annotated_sources = [
+            {
+                **source,
+                "query": search_query,
+                "query_index": query_index,
+            }
+            for source in query_sources
+        ]
+        per_query_results.append(annotated_sources)
+        search_successes.append(query_success)
+
+        if research_logger is not None:
+            research_logger.log_event(
+                "search",
+                parent_id=parent_id,
+                action=action,
+                perspective=perspective,
+                query=search_query,
+                query_index=query_index,
+                num_sources=len(query_sources),
+                search_success=query_success,
+                results=annotated_sources,
+            )
+
+    sources = merge_and_dedupe_sources(per_query_results)
+    search_success = any(search_successes)
+    search_query = " | ".join(search_queries)
+
     if research_logger is not None:
         research_logger.log_event(
-            "search",
+            "search_merged",
             parent_id=parent_id,
             action=action,
             perspective=perspective,
-            query=search_query,
+            queries=search_queries,
             num_sources=len(sources),
             search_success=search_success,
+            results=sources,
         )
 
     system_prompt = researcher_system_prompt(action, perspective)
@@ -148,7 +223,7 @@ def generate_fn(
         topic=topic,
         action=action,
         perspective=perspective,
-        search_query=search_query,
+        search_queries=search_queries,
         sources=sources,
         parent_state=parent_state,
     )
@@ -163,6 +238,7 @@ def generate_fn(
         perspective=perspective,
         role="researcher",
     )
+    open_questions = extract_open_questions(text)
 
     review_system = reviewer_system_prompt()
     review_user = build_review_prompt(
@@ -204,6 +280,8 @@ def generate_fn(
         parent_id=parent_id,
         depth=depth,
         search_query=search_query,
+        search_queries=search_queries,
+        open_questions=open_questions,
         review_text=review_summary,
     )
 
@@ -225,8 +303,10 @@ def generate_fn(
             perspective=perspective,
             score=score,
             query=search_query,
+            queries=search_queries,
             num_sources=len(sources),
             findings=findings,
+            open_questions=open_questions,
             elapsed_ms=elapsed_ms,
         )
         research_logger.log_human(
@@ -244,9 +324,12 @@ def generate_fn(
                 f"- action: `{action}`\n"
                 f"- perspective: `{perspective}`\n"
                 f"- score: `{score:.3f}`\n"
+                f"- search_queries: `{json.dumps(search_queries, ensure_ascii=False)}`\n"
                 f"- sources: `{len(sources)}`\n"
                 f"- findings: `{len(findings)}`\n\n"
-                f"{text[:1000]}"
+                f"### 次に渡す問い\n\n"
+                f"{json.dumps(open_questions, ensure_ascii=False, indent=2)}\n\n"
+                f"{text}"
             ),
         )
 
@@ -419,6 +502,8 @@ def main(cfg: DictConfig) -> None:
             temperature=float(_cfg_get(llm_cfg, "temperature", 0.3)),
             max_tokens=int(_cfg_get(llm_cfg, "max_tokens", 1200)),
             max_results=int(_cfg_get(search_cfg, "max_results", 5)),
+            max_queries=int(_cfg_get(search_cfg, "max_queries", 3)),
+            max_query_words=int(_cfg_get(search_cfg, "max_query_words", 6)),
             research_logger=research_logger,
         )
         for action in actions

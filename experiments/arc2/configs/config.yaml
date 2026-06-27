@@ -16,6 +16,8 @@ search:
   engines: "google,bing,brave,yandex"
   language: "ja"
   max_results: 5
+  max_queries: 3
+  max_query_words: 6
 
 algo:
   class_name: "ABMCTSM"
