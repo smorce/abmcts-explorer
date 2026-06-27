@@ -29,6 +29,7 @@ experiments/arc2/configs/config.yaml
 
 | キー | 既定値 | 意味 |
 |------|--------|------|
+| `language` | `null` | SearXNG の結果言語フィルタ（`null` = 指定なし） |
 | `max_results` | 5 | 1クエリあたりの検索結果件数 |
 | `max_queries` | 3 | 1ノードで使うキーワードクエリの上限（本数はプランナーが動的に決定） |
 | `max_query_words` | 10 | 1クエリあたりの最大語数（空白区切り） |
@@ -58,7 +59,8 @@ $env:LLAMA_SERVER_MAX_TOKENS='30000'
 
 $env:SEARXNG_URL='http://127.0.0.1:4866'
 $env:SEARXNG_ENGINE='google,bing,brave,yandex'
-$env:SEARXNG_LANGUAGE='ja'
+# 結果を言語で絞る場合のみ（既定は config.yaml の language: null = 未指定）
+# $env:SEARXNG_LANGUAGE='ja'
 ```
 
 ## 接続確認
@@ -66,7 +68,7 @@ $env:SEARXNG_LANGUAGE='ja'
 SearXNG の簡易確認:
 
 ```powershell
-Invoke-RestMethod 'http://127.0.0.1:4866/search?q=GDPR&format=json&pageno=1&engines=google&language=ja'
+Invoke-RestMethod 'http://127.0.0.1:4866/search?q=GDPR&format=json&pageno=1&engines=google'
 ```
 
 `llama-server` は OpenAI Responses API 互換で起動している前提です。

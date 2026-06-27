@@ -402,6 +402,35 @@ def parse_review_payload(text: str) -> tuple[float, list[str], str]:
     return clamp01(base_score), findings, summary
 
 
+def is_action_target_missing(
+    action: ResearchAction,
+    parent_state: NodeState | None,
+) -> bool:
+    """
+    修正・改善系アクションで、前提となる親コンテキストが欠けているか判定する。
+
+    判定ルール（is_action_target_missing）：
+
+    action      欠落条件（減点条件）
+    ---------------------------------------------
+    new_angle   なし
+    revise      親がない、または parent_state.findings が空の場合
+    deepen      親がない、または parent_state.open_questions が空の場合
+    criticize   親がない、または parent_state.text（調査メモ）が空の場合
+    """
+    if action == "new_angle":
+        return False
+    if parent_state is None:
+        return True
+    if action == "revise":
+        return not parent_state.findings
+    if action == "deepen":
+        return not parent_state.open_questions
+    if action == "criticize":
+        return not parent_state.text.strip()
+    return False
+
+
 def score_review(
     base_score: float,
     findings: list[str],
@@ -410,6 +439,7 @@ def score_review(
     search_success: bool,
     repetition_penalty: float = 0.0,
     coverage_bonus: float = 0.0,
+    target_missing_penalty: float = 0.0,
 ) -> float:
     # findings ペナルティは上限を抑え、良質ノードのスコア差が 0.2 付近に潰れないようにする。
     penalty = min(0.24, 0.03 * len(findings))
@@ -418,7 +448,16 @@ def score_review(
         penalty += 0.10
     elif num_sources == 0:
         penalty += 0.20
-    return round(clamp01(base_score - penalty - repetition_penalty + coverage_bonus), 6)
+    return round(
+        clamp01(
+            base_score
+            - penalty
+            - repetition_penalty
+            - target_missing_penalty
+            + coverage_bonus
+        ),
+        6,
+    )
 
 
 def make_eval_results(score: float, findings: list[str]) -> list[EvalResultWithScore]:

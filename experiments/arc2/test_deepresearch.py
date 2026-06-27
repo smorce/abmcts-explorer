@@ -20,6 +20,7 @@ from utils import (
     choose_facet,
     dummy_web_search,
     extract_open_questions,
+    is_action_target_missing,
     merge_and_dedupe_sources,
     parse_facets,
     parse_query_plan,
@@ -47,7 +48,7 @@ def test_parse_review_payload_and_score_penalty() -> None:
 
     assert summary == "概ね良い"
     assert findings == ["根拠不足", "矛盾あり"]
-    assert score == 0.72
+    assert score == 0.74
 
 
 def test_parse_query_plan_limits_words_and_queries() -> None:
@@ -193,7 +194,53 @@ def test_score_review_applies_repetition_penalty_and_coverage_bonus() -> None:
         coverage_bonus=0.05,
     )
 
-    assert score == 0.66
+    assert score == 0.67
+
+
+def test_is_action_target_missing() -> None:
+    parent = NodeState(
+        topic="テスト",
+        action="deepen",
+        perspective="技術",
+        text="調査メモ",
+        sources=[],
+        findings=["根拠不足"],
+        eval_results=[],
+        score=0.5,
+        open_questions=["次の問い"],
+    )
+    parent_no_questions = NodeState(
+        topic="テスト",
+        action="deepen",
+        perspective="技術",
+        text="調査メモ",
+        sources=[],
+        findings=[],
+        eval_results=[],
+        score=0.5,
+    )
+
+    assert is_action_target_missing("new_angle", None) is False
+    assert is_action_target_missing("revise", None) is True
+    assert is_action_target_missing("revise", parent_no_questions) is True
+    assert is_action_target_missing("revise", parent) is False
+    assert is_action_target_missing("deepen", None) is True
+    assert is_action_target_missing("deepen", parent_no_questions) is True
+    assert is_action_target_missing("deepen", parent) is False
+    assert is_action_target_missing("criticize", None) is True
+    assert is_action_target_missing("criticize", parent) is False
+
+
+def test_score_review_applies_target_missing_penalty() -> None:
+    score = score_review(
+        0.8,
+        [],
+        num_sources=3,
+        search_success=True,
+        target_missing_penalty=0.20,
+    )
+
+    assert score == 0.60
 
 
 def test_research_logger_writes_jsonl(tmp_path: Path) -> None:
@@ -289,6 +336,7 @@ def test_generate_fn_uses_mocked_llm_and_search(monkeypatch, tmp_path: Path) -> 
         exploration_state=exploration_state,
         novelty_penalty_weight=0.15,
         coverage_bonus=0.05,
+        action_target_penalty_weight=0.20,
         research_logger=logger,
     )
 

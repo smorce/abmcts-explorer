@@ -54,6 +54,7 @@ from utils import (
     parse_review_payload,
     query_set_signature,
     query_token_signature,
+    is_action_target_missing,
     score_review,
     source_url_signature,
     state_formatter_html,
@@ -203,6 +204,7 @@ def generate_fn(
     exploration_state: dict[str, Any],
     novelty_penalty_weight: float,
     coverage_bonus: float,
+    action_target_penalty_weight: float,
     query_similarity_threshold: float = 0.6,
     research_logger: ResearchLogger | None = None,
 ) -> tuple[NodeState, float]:
@@ -382,6 +384,10 @@ def generate_fn(
     )
 
     base_score, findings, review_summary = parse_review_payload(review_text)
+    target_missing = is_action_target_missing(action, parent_state)
+    applied_target_missing_penalty = (
+        action_target_penalty_weight if target_missing else 0.0
+    )
     score = score_review(
         base_score,
         findings,
@@ -389,6 +395,7 @@ def generate_fn(
         search_success=search_success,
         repetition_penalty=repetition_penalty,
         coverage_bonus=applied_coverage_bonus,
+        target_missing_penalty=applied_target_missing_penalty,
     )
     eval_results = make_eval_results(score, findings)
     state = NodeState(
@@ -435,6 +442,8 @@ def generate_fn(
             focus_question=focus_question,
             repetition_penalty=repetition_penalty,
             coverage_bonus=applied_coverage_bonus,
+            target_missing=target_missing,
+            target_missing_penalty=applied_target_missing_penalty,
             elapsed_ms=elapsed_ms,
         )
         research_logger.log_human(
@@ -456,6 +465,8 @@ def generate_fn(
                 f"- score: `{score:.3f}`\n"
                 f"- repetition_penalty: `{repetition_penalty:.3f}`\n"
                 f"- coverage_bonus: `{applied_coverage_bonus:.3f}`\n"
+                f"- target_missing: `{target_missing}`\n"
+                f"- target_missing_penalty: `{applied_target_missing_penalty:.3f}`\n"
                 f"- focus_question: `{focus_question or ''}`\n"
                 f"- search_queries: `{json.dumps(search_queries, ensure_ascii=False)}`\n"
                 f"- sources: `{len(sources)}`\n"
@@ -670,6 +681,9 @@ def main(cfg: DictConfig) -> None:
         _cfg_get(exploration_cfg, "novelty_penalty_weight", 0.15)
     )
     coverage_bonus = float(_cfg_get(exploration_cfg, "coverage_bonus", 0.05))
+    action_target_penalty_weight = float(
+        _cfg_get(exploration_cfg, "action_target_penalty_weight", 0.20)
+    )
     query_similarity_threshold = float(
         _cfg_get(exploration_cfg, "query_similarity_threshold", 0.6)
     )
@@ -706,6 +720,7 @@ def main(cfg: DictConfig) -> None:
             exploration_state=exploration_state,
             novelty_penalty_weight=novelty_penalty_weight,
             coverage_bonus=coverage_bonus,
+            action_target_penalty_weight=action_target_penalty_weight,
             query_similarity_threshold=query_similarity_threshold,
             research_logger=research_logger,
         )

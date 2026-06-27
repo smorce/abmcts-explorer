@@ -68,7 +68,7 @@ def query_planner_system_prompt(*, reference_date: date | None = None) -> str:
     ref = format_reference_date(reference_date)
     return f"""
 あなたはDeepResearchの検索クエリ設計者です。
-次の探索アクションで使うWeb検索クエリを、日本語や英語の短いキーワード列として設計してください。
+次の探索アクションで使うWeb検索クエリを、日本語または英語の短いキーワード列として設計してください。欲しい情報に応じて言語は選択してください。
 
 参照日（調査実行日）: {ref}
 - 「最新」「直近」などの判断はこの日付を基準にしてください。

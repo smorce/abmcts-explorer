@@ -14,7 +14,7 @@ llm:
 search:
   url: "http://127.0.0.1:4866"
   engines: "google,bing,brave,yandex"
-  language: "ja"
+  language: null
   max_results: 5
   max_queries: 3
   # クエリワードの最大数
@@ -25,6 +25,8 @@ exploration:
   num_facets: 4
   novelty_penalty_weight: 0.15
   coverage_bonus: 0.05
+  # deepen/criticize/revise で親コンテキストが欠けている場合の減点
+  action_target_penalty_weight: 0.20
   # 語ベースJaccardの近似重複しきい値。生成時フィルタと重複ペナルティの両方で使用。
   query_similarity_threshold: 0.6
 
