@@ -24,6 +24,8 @@ exploration:
   num_facets: 4
   novelty_penalty_weight: 0.15
   coverage_bonus: 0.05
+  # 語ベースJaccardの近似重複しきい値。生成時フィルタと重複ペナルティの両方で使用。
+  query_similarity_threshold: 0.6
 
 algo:
   class_name: "ABMCTSM"

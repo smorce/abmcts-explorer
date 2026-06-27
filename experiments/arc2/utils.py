@@ -56,10 +56,19 @@ def clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
-def choose_perspective(parent_state: NodeState | None, action: ResearchAction) -> str:
+def choose_perspective(
+    parent_state: NodeState | None,
+    action: ResearchAction,
+    perspective_counts: dict[str, int] | None = None,
+) -> str:
+    # wider(new_angle)/root では最小使用回数の観点を選び、観点が偏らないようにする。
+    # deepen/criticize/revise は親観点を継承し、論点の連続性を保つ。
     if parent_state is None or action == "new_angle":
-        depth = 0 if parent_state is None else parent_state.depth
-        return PERSPECTIVES[depth % len(PERSPECTIVES)]
+        counts = perspective_counts or {}
+        return min(
+            PERSPECTIVES,
+            key=lambda perspective: (counts.get(perspective, 0), PERSPECTIVES.index(perspective)),
+        )
     return parent_state.perspective
 
 
@@ -67,7 +76,14 @@ def _trim_query_words(query: str, max_words: int) -> str:
     return " ".join(query.strip().split()[:max_words])
 
 
-def parse_query_plan(text: str, *, max_queries: int, max_words: int) -> list[str]:
+def parse_query_plan(
+    text: str,
+    *,
+    max_queries: int,
+    max_words: int,
+    existing_queries: list[str] | None = None,
+    similarity_threshold: float = 1.0,
+) -> list[str]:
     data = parse_json_object(text)
     if data is None:
         return []
@@ -76,14 +92,23 @@ def parse_query_plan(text: str, *, max_queries: int, max_words: int) -> list[str
     if not isinstance(raw_queries, list):
         return []
 
+    existing_token_sets = [_query_tokens(query) for query in (existing_queries or [])]
     queries: list[str] = []
     seen: set[str] = set()
+    accepted_token_sets: list[frozenset[str]] = []
     for item in raw_queries:
         query = _trim_query_words(str(item), max_words=max_words)
         if not query or query in seen:
             continue
+        tokens = _query_tokens(query)
+        # 既存クエリや既に採用済みのクエリと酷似する場合は除外し、近似重複を防ぐ。
+        if similarity_threshold < 1.0 and tokens:
+            candidates = existing_token_sets + accepted_token_sets
+            if max_query_jaccard(tokens, candidates) >= similarity_threshold:
+                continue
         seen.add(query)
         queries.append(query)
+        accepted_token_sets.append(tokens)
         if len(queries) >= max_queries:
             break
     return queries
@@ -254,6 +279,33 @@ def _signature_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
+def _query_tokens(query: str) -> frozenset[str]:
+    normalized = re.sub(r"[、。・/（）()「」『』,.;:]+", " ", query.lower())
+    return frozenset(token for token in normalized.split() if token)
+
+
+def _jaccard(left: frozenset[str], right: frozenset[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def query_token_signature(queries: list[str]) -> frozenset[str]:
+    tokens: set[str] = set()
+    for query in queries:
+        tokens |= _query_tokens(query)
+    return frozenset(tokens)
+
+
+def max_query_jaccard(
+    signature: frozenset[str], seen_signatures: list[frozenset[str]]
+) -> float:
+    return max(
+        (_jaccard(signature, existing) for existing in seen_signatures),
+        default=0.0,
+    )
+
+
 def query_set_signature(queries: list[str]) -> frozenset[str]:
     return frozenset(_signature_text(query) for query in queries if query.strip())
 
@@ -359,11 +411,13 @@ def score_review(
     repetition_penalty: float = 0.0,
     coverage_bonus: float = 0.0,
 ) -> float:
-    penalty = min(0.30, 0.04 * len(findings))
-    if num_sources == 0:
-        penalty += 0.20
+    # findings ペナルティは上限を抑え、良質ノードのスコア差が 0.2 付近に潰れないようにする。
+    penalty = min(0.24, 0.03 * len(findings))
+    # 検索品質の減点は一本化し、検索失敗(dummy)時に 0-source と !success を二重に課さない。
     if not search_success:
-        penalty += 0.05
+        penalty += 0.10
+    elif num_sources == 0:
+        penalty += 0.20
     return round(clamp01(base_score - penalty - repetition_penalty + coverage_bonus), 6)
 
 

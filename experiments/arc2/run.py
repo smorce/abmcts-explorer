@@ -47,11 +47,13 @@ from utils import (
     extract_open_questions,
     get_top_k,
     make_eval_results,
+    max_query_jaccard,
     merge_and_dedupe_sources,
     parse_facets,
     parse_query_plan,
     parse_review_payload,
     query_set_signature,
+    query_token_signature,
     score_review,
     source_url_signature,
     state_formatter_html,
@@ -201,18 +203,21 @@ def generate_fn(
     exploration_state: dict[str, Any],
     novelty_penalty_weight: float,
     coverage_bonus: float,
+    query_similarity_threshold: float = 0.6,
     research_logger: ResearchLogger | None = None,
 ) -> tuple[NodeState, float]:
     start_time = time.time()
     max_queries = max(1, max_queries)
     max_query_words = max(1, max_query_words)
-    perspective = choose_perspective(parent_state, action)
     parent_id = parent_state.node_id if parent_state is not None else None
     depth = 1 if parent_state is None else parent_state.depth + 1
     facet_counts = exploration_state.setdefault("facet_counts", {})
+    perspective_counts = exploration_state.setdefault("perspective_counts", {})
+    perspective = choose_perspective(parent_state, action, perspective_counts)
     used_queries = exploration_state.setdefault("used_queries", set())
     used_open_questions = exploration_state.setdefault("used_open_questions", set())
     seen_query_sigs = exploration_state.setdefault("seen_query_sigs", set())
+    seen_query_token_sigs = exploration_state.setdefault("seen_query_token_sigs", [])
     seen_url_sigs = exploration_state.setdefault("seen_url_sigs", [])
     facet = _select_facet(
         parent_state=parent_state,
@@ -225,7 +230,10 @@ def generate_fn(
         if action == "deepen"
         else None
     )
-    avoid_queries = sorted(str(query) for query in used_queries)[-20:]
+    # new_angle の重複回避用に、過去に使ったクエリ・観点・ファセットを広めに渡す。
+    avoid_queries = sorted(str(query) for query in used_queries)[:40]
+    covered_perspectives = sorted(perspective_counts)
+    covered_facets = sorted(facet_counts)
 
     planner_text = call_local_llm(
         system_prompt=query_planner_system_prompt(),
@@ -239,6 +247,8 @@ def generate_fn(
             focus_question=focus_question,
             max_queries=max_queries,
             max_words=max_query_words,
+            covered_facets=covered_facets,
+            covered_perspectives=covered_perspectives,
         ),
         temperature=planner_temperature,
         max_tokens=max_tokens,
@@ -252,6 +262,8 @@ def generate_fn(
         planner_text,
         max_queries=max_queries,
         max_words=max_query_words,
+        existing_queries=sorted(str(query) for query in used_queries),
+        similarity_threshold=query_similarity_threshold,
     )
     if not search_queries:
         search_queries = build_fallback_queries(
@@ -264,6 +276,7 @@ def generate_fn(
         )
 
     query_sig = query_set_signature(search_queries)
+    query_token_sig = query_token_signature(search_queries)
     per_query_results: list[list[dict[str, Any]]] = []
     search_successes: list[bool] = []
     for query_index, search_query in enumerate(search_queries, start=1):
@@ -297,11 +310,14 @@ def generate_fn(
 
     sources = merge_and_dedupe_sources(per_query_results)
     url_sig = source_url_signature(sources)
-    repetition_penalty = (
-        novelty_penalty_weight
-        if query_sig in seen_query_sigs or _is_repeated_sources(url_sig, seen_url_sigs)
-        else 0.0
+    # 完全一致集合・URL重複に加えて、語ベースの近似重複(Jaccard)も罰する。
+    is_repeated = (
+        query_sig in seen_query_sigs
+        or _is_repeated_sources(url_sig, seen_url_sigs)
+        or max_query_jaccard(query_token_sig, seen_query_token_sigs)
+        >= query_similarity_threshold
     )
+    repetition_penalty = novelty_penalty_weight if is_repeated else 0.0
     applied_coverage_bonus = (
         coverage_bonus if facet is not None and facet_counts.get(facet, 0) == 0 else 0.0
     )
@@ -345,7 +361,7 @@ def generate_fn(
     )
     open_questions = extract_open_questions(text)
 
-    review_system = reviewer_system_prompt()
+    review_system = reviewer_system_prompt(action)
     review_user = build_review_prompt(
         topic=topic,
         action=action,
@@ -452,10 +468,13 @@ def generate_fn(
 
     if facet is not None:
         facet_counts[facet] = facet_counts.get(facet, 0) + 1
+    perspective_counts[perspective] = perspective_counts.get(perspective, 0) + 1
     used_queries.update(search_queries)
     if focus_question is not None:
         used_open_questions.add(focus_question)
     seen_query_sigs.add(query_sig)
+    if query_token_sig:
+        seen_query_token_sigs.append(query_token_sig)
     if url_sig:
         seen_url_sigs.append(url_sig)
 
@@ -651,6 +670,9 @@ def main(cfg: DictConfig) -> None:
         _cfg_get(exploration_cfg, "novelty_penalty_weight", 0.15)
     )
     coverage_bonus = float(_cfg_get(exploration_cfg, "coverage_bonus", 0.05))
+    query_similarity_threshold = float(
+        _cfg_get(exploration_cfg, "query_similarity_threshold", 0.6)
+    )
     facets = decompose_topic(
         topic=topic,
         num_facets=num_facets,
@@ -660,9 +682,11 @@ def main(cfg: DictConfig) -> None:
     )
     exploration_state: dict[str, Any] = {
         "facet_counts": {},
+        "perspective_counts": {},
         "used_queries": set(),
         "used_open_questions": set(),
         "seen_query_sigs": set(),
+        "seen_query_token_sigs": [],
         "seen_url_sigs": [],
     }
 
@@ -682,6 +706,7 @@ def main(cfg: DictConfig) -> None:
             exploration_state=exploration_state,
             novelty_penalty_weight=novelty_penalty_weight,
             coverage_bonus=coverage_bonus,
+            query_similarity_threshold=query_similarity_threshold,
             research_logger=research_logger,
         )
         for action in actions
