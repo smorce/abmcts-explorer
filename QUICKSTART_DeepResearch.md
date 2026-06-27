@@ -79,7 +79,7 @@ $env:UV_LINK_MODE='copy'
 uv run --link-mode=copy experiments/arc2/run.py max_num_nodes=2 top_k=2 algo.class_name=ABMCTSA
 ```
 
-`ABMCTSM` のバッチ実行を試す場合:
+`ABMCTSM` のバッチ実行を試す場合(ユーザーからDeepResearchの依頼を受けた場合はこちらで実行する):
 
 ```powershell
 $env:PYTHONUTF8='1'
