@@ -23,6 +23,26 @@ EUのプライバシー対応の現状と、日本の各企業が実施してい
 experiments/arc2/configs/config.yaml
 ```
 
+`search` 節の主な既定値:
+
+| キー | 既定値 | 意味 |
+|------|--------|------|
+| `max_results` | 5 | 1クエリあたりの検索結果件数 |
+| `max_queries` | 3 | 1ノードで使うキーワードクエリの上限（本数はプランナーが動的に決定） |
+| `max_query_words` | 6 | 1クエリあたりの最大語数（空白区切り） |
+
+## 探索の流れ（1ノード）
+
+各ノードは次の順で処理されます（LLM 呼び出しは **3回**: プランナー → リサーチャー → レビュアー）。
+
+1. **クエリプランナー**: アクション（`new_angle` / `deepen` / `criticize` / `revise`）に応じて、日本語の短いキーワード列を 1〜`max_queries` 本生成（自然文は使わない）。初回（親ノードなし）も同様。
+2. **複数検索**: 各キーワードクエリで SearXNG を実行。クエリごとの生結果は `events.jsonl` の `search` イベントに記録。
+3. **統合**: URL 重複とスニペット類似（しきい値 0.9）を機械的に除去し、重複削除済みソースをリサーチャーへ渡す。統合結果は `search_merged` イベントと `nodes.jsonl` の `sources` に記録。
+4. **リサーチャー**: 統合ソースから調査メモを作成。末尾の「次に深掘りすべき問い」は `open_questions` として保存。
+5. **レビュアー**: スコアと `findings` を付与。
+
+次ノードへ渡るのは生の検索結果ではなく、親の **調査メモ（`text`）**、**`open_questions`**、**`findings`** です。`deepen` は親の `open_questions` を、`revise` は親の `findings` を検索の手がかりにします。
+
 ## 環境変数
 
 通常は `config.yaml` の既定値が `run.py` 起動時に適用されるため、明示設定は不要です。上書きしたい場合は PowerShell で以下を設定します。
@@ -32,7 +52,7 @@ $env:LLAMA_SERVER_BASE_URL='http://127.0.0.1:1067'
 $env:LLM_MODEL='unsloth/Qwen3.6-27B-MTP-GGUF-UD-Q4_K_XL'
 $env:LLAMA_SERVER_ENABLE_THINKING='false'
 $env:LLAMA_SERVER_TEMPERATURE='0.3'
-$env:LLAMA_SERVER_MAX_TOKENS='12000'
+$env:LLAMA_SERVER_MAX_TOKENS='30000'
 
 $env:SEARXNG_URL='http://127.0.0.1:4866'
 $env:SEARXNG_ENGINE='google,bing,brave,yandex'
@@ -87,13 +107,13 @@ outputs/deepresearch/<ALGO>_<timestamp>/
 
 - `final_report.md`: 最終レポート
 - `final_review.json`: 最終レポートの自動レビュー
-- `logs/events.jsonl`: 時系列イベントログ
+- `logs/events.jsonl`: 時系列イベントログ（`search` = クエリ別の生結果、`search_merged` = 重複削除後の統合ソース、`node_generated` など）
 - `logs/research.log`: 人間向けログ
-- `logs/progress.md`: 探索進行のMarkdownログ
-- `llm_io/llm_calls.jsonl`: LLM投入用ログ
-- `tree/nodes.jsonl`: ノード情報
+- `logs/progress.md`: 探索進行の Markdown ログ（各ノードに `search_queries` と次に渡す問いを含む）
+- `llm_io/llm_calls.jsonl` / `llm_io/call_*.json`: LLM 入出力（`role` は `planner` / `researcher` / `reviewer` / `editor`）
+- `tree/nodes.jsonl`: ノード情報（`search_queries`, `open_questions`, `sources`, `findings` など）
 - `tree/edges.jsonl`: エッジ情報
-- `tree/tree.html`: 探索木のHTML可視化
+- `tree/tree.html`: 探索木の HTML 可視化（ノードにクエリと open_questions を表示）
 
 ## テスト
 
@@ -108,7 +128,15 @@ uv run --no-project --with pytest --with hydra-core --with omegaconf --with pyth
 期待結果:
 
 ```text
-4 passed
+7 passed
+```
+
+## 検索・探索の調整
+
+Hydra override で検索本数や語数を変えられます。
+
+```powershell
+uv run --link-mode=copy experiments/arc2/run.py search.max_queries=2 search.max_query_words=5 search.max_results=3
 ```
 
 ## テーマを変える
