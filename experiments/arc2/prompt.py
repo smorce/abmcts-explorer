@@ -2,9 +2,28 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from datetime import date
 from typing import Any
 
 from utils import NodeState, ResearchAction
+
+
+def format_reference_date(reference_date: date | None = None) -> str:
+    d = reference_date or date.today()
+    weekdays = "月火水木金土日"
+    weekday = weekdays[d.weekday()]
+    return f"{d.year}年{d.month}月{d.day}日（{weekday}）"
+
+
+def reference_date_block(reference_date: date | None = None) -> str:
+    d = reference_date or date.today()
+    formatted = format_reference_date(d)
+    return (
+        f"# 参照日\n"
+        f"{formatted}（ISO: {d.isoformat()}）\n"
+        f"- 出典の日付・新旧・未来/過去の判断は、この参照日を基準にしてください。\n"
+        f"- 参照日以前の日付は過去または当日の情報であり、「未来の日付」ではありません。"
+    )
 
 
 ACTION_DESCRIPTIONS: dict[ResearchAction, str] = {
@@ -23,14 +42,18 @@ ACTION_QUERY_INSTRUCTIONS: dict[ResearchAction, str] = {
 }
 
 
-def query_planner_system_prompt() -> str:
-    return """
+def query_planner_system_prompt(*, reference_date: date | None = None) -> str:
+    ref = format_reference_date(reference_date)
+    return f"""
 あなたはDeepResearchの検索クエリ設計者です。
 次の探索アクションで使うWeb検索クエリを、日本語の短いキーワード列として設計してください。
 
+参照日（調査実行日）: {ref}
+- 「最新」「直近」などの判断はこの日付を基準にしてください。
+
 守ること:
 - 必ずJSONオブジェクトだけを返す。
-- 形式は {"queries": ["単語 単語 単語", "..."]}。
+- 形式は {{"queries": ["単語 単語 単語", "..."]}}。
 - クエリは自然文や質問文にしない。
 - 各クエリは空白区切りで最大語数以内にする。
 - 必要な本数だけ返し、最大本数を無理に埋めない。
@@ -38,12 +61,21 @@ def query_planner_system_prompt() -> str:
 """.strip()
 
 
-def researcher_system_prompt(action: ResearchAction, perspective: str) -> str:
+def researcher_system_prompt(
+    action: ResearchAction,
+    perspective: str,
+    *,
+    reference_date: date | None = None,
+) -> str:
     action_description = ACTION_DESCRIPTIONS.get(action, ACTION_DESCRIPTIONS["deepen"])
+    ref = format_reference_date(reference_date)
     return f"""
 あなたはDeepResearchチームの調査担当です。
 現在の役割は「{perspective}」観点のリサーチャーです。
 今回の探索アクションは「{action}」です: {action_description}
+
+参照日（調査実行日）: {ref}
+- 出典の日付・新旧を判断するときはこの日付を基準にしてください。
 
 守ること:
 - 検索結果に含まれる情報だけを根拠として扱う。
@@ -54,17 +86,22 @@ def researcher_system_prompt(action: ResearchAction, perspective: str) -> str:
 """.strip()
 
 
-def reviewer_system_prompt() -> str:
-    return """
+def reviewer_system_prompt(*, reference_date: date | None = None) -> str:
+    ref = format_reference_date(reference_date)
+    return f"""
 あなたはDeepResearchの厳格な自動レビュアーです。
 調査メモに対して、根拠不足、古い情報、矛盾、出典の弱さ、結論の飛躍を探してください。
 
+参照日（調査実行日）: {ref}
+- 出典の日付が参照日以前であれば、それは過去または当日の情報です。「未来の日付」や「重大な誤記」として指摘しないでください。
+- 「未来の日付」とは参照日より後の日付のみを指します。
+
 必ず次のJSONオブジェクトだけを返してください。
-{
+{{
   "score": 0.0から1.0の数値,
   "summary": "短い総評",
   "findings": ["修正または再調査すべき指摘", "..."]
-}
+}}
 
 採点基準:
 - 1.0: 強い根拠が複数あり、矛盾と限界も扱えている
@@ -74,10 +111,14 @@ def reviewer_system_prompt() -> str:
 """.strip()
 
 
-def final_report_system_prompt() -> str:
-    return """
+def final_report_system_prompt(*, reference_date: date | None = None) -> str:
+    ref = format_reference_date(reference_date)
+    return f"""
 あなたはDeepResearchの編集長です。
 探索済みノードのうち有望な論点だけを統合し、根拠と不確実性が分かる最終レポートを作成してください。
+
+参照日（調査実行日）: {ref}
+- 出典の日付・新旧を判断するときはこの日付を基準にしてください。
 
 構成:
 1. Executive Summary
@@ -99,6 +140,7 @@ def build_research_prompt(
     search_queries: list[str],
     sources: list[dict[str, Any]],
     parent_state: NodeState | None,
+    reference_date: date | None = None,
 ) -> str:
     parent_summary = "親ノードはありません。今回が初回の論点設計です。"
     if parent_state is not None:
@@ -118,6 +160,8 @@ def build_research_prompt(
 
     source_block = json.dumps(sources, ensure_ascii=False, indent=2)
     return f"""
+{reference_date_block(reference_date)}
+
 # 調査テーマ
 {topic}
 
@@ -152,6 +196,7 @@ def build_query_planner_prompt(
     parent_state: NodeState | None,
     max_queries: int,
     max_words: int,
+    reference_date: date | None = None,
 ) -> str:
     if parent_state is None:
         parent_summary = "親ノードはありません。初回探索として、概要を素早く掴むための広めのキーワード群を作ってください。"
@@ -171,6 +216,8 @@ def build_query_planner_prompt(
         )
 
     return f"""
+{reference_date_block(reference_date)}
+
 # 調査テーマ
 {topic}
 
@@ -186,7 +233,7 @@ def build_query_planner_prompt(
 # 制約
 - クエリ本数: 1〜{max_queries}本
 - 1クエリの最大語数: {max_words}語
-- 自然文は禁止。例: "GDPR 日本企業 DPO 導入" のような単語列にする。
+- 自然文は禁止。例: "単語 単語 単語 単語" のような単語列にする。
 - root(親なし)では、概要把握・最新動向・主要プレイヤーなどを必要な範囲で分ける。
 
 # 出力JSON
@@ -201,8 +248,11 @@ def build_review_prompt(
     perspective: str,
     text: str,
     sources: list[dict[str, Any]],
+    reference_date: date | None = None,
 ) -> str:
     return f"""
+{reference_date_block(reference_date)}
+
 # 調査テーマ
 {topic}
 
@@ -220,9 +270,28 @@ def build_review_prompt(
 """.strip()
 
 
+def build_final_review_prompt(
+    *,
+    topic: str,
+    report: str,
+    reference_date: date | None = None,
+) -> str:
+    return f"""
+{reference_date_block(reference_date)}
+
+# 調査テーマ
+{topic}
+
+# 最終レポート
+{report}
+""".strip()
+
+
 def build_final_report_prompt(
     topic: str,
     top_states: list[tuple[NodeState, float]],
+    *,
+    reference_date: date | None = None,
 ) -> str:
     payload = [
         {
@@ -232,6 +301,8 @@ def build_final_report_prompt(
         for state, node_score in top_states
     ]
     return f"""
+{reference_date_block(reference_date)}
+
 # 調査テーマ
 {topic}
 

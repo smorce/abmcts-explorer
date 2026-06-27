@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from logging_utils import ResearchLogger
 from prompt import (
     build_final_report_prompt,
+    build_final_review_prompt,
     build_query_planner_prompt,
     build_research_prompt,
     build_review_prompt,
@@ -429,7 +430,7 @@ def write_final_report(
     )
     review = call_local_llm(
         system_prompt=reviewer_system_prompt(),
-        user_prompt=f"# 調査テーマ\n{topic}\n\n# 最終レポート\n{report}",
+        user_prompt=build_final_review_prompt(topic=topic, report=report),
         temperature=0.0,
         max_tokens=max_tokens,
         research_logger=research_logger,

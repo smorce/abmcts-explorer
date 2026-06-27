@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from logging_utils import ResearchLogger
+from prompt import (
+    build_review_prompt,
+    format_reference_date,
+    reference_date_block,
+    reviewer_system_prompt,
+)
 from run import generate_fn
 from utils import (
     NodeState,
@@ -216,3 +223,25 @@ def test_generate_fn_uses_mocked_llm_and_search(monkeypatch, tmp_path: Path) -> 
     assert state.open_questions == ["日本企業のDPO設置状況は？"]
     assert score == 0.9
     assert state.score == score
+
+
+def test_prompts_include_reference_date() -> None:
+    ref = date(2026, 5, 25)
+
+    assert format_reference_date(ref) == "2026年5月25日（月）"
+    assert "2026-05-25" in reference_date_block(ref)
+    assert "未来の日付" in reference_date_block(ref)
+
+    review_user = build_review_prompt(
+        topic="テスト",
+        action="deepen",
+        perspective="技術",
+        text="調査メモ",
+        sources=[],
+        reference_date=ref,
+    )
+    assert "2026年5月25日（月）" in review_user
+
+    review_system = reviewer_system_prompt(reference_date=ref)
+    assert "2026年5月25日（月）" in review_system
+    assert "参照日より後" in review_system
