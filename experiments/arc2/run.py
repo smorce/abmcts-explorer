@@ -30,9 +30,11 @@ from prompt import (
     build_query_planner_prompt,
     build_research_prompt,
     build_review_prompt,
+    build_topic_decomposition_prompt,
     final_report_system_prompt,
     query_planner_system_prompt,
     researcher_system_prompt,
+    topic_decomposition_system_prompt,
     reviewer_system_prompt,
 )
 from utils import (
@@ -40,14 +42,18 @@ from utils import (
     NodeState,
     build_fallback_queries,
     choose_perspective,
+    choose_facet,
     clamp01,
     extract_open_questions,
     get_top_k,
     make_eval_results,
     merge_and_dedupe_sources,
+    parse_facets,
     parse_query_plan,
     parse_review_payload,
+    query_set_signature,
     score_review,
+    source_url_signature,
     state_formatter_html,
     web_search,
 )
@@ -82,6 +88,66 @@ def apply_env_defaults(cfg: DictConfig) -> None:
     for key, value in defaults.items():
         if value is not None:
             os.environ.setdefault(key, str(value))
+
+
+def _fallback_facets(topic: str, *, num_facets: int) -> list[str]:
+    candidates = [
+        part.strip()
+        for part in topic.replace("、", "と").replace("および", "と").split("と")
+        if part.strip()
+    ]
+    if len(candidates) < 2:
+        candidates.extend(["EU規制の現状", "日本企業の具体的対応"])
+
+    facets: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        facets.append(candidate)
+        seen.add(candidate)
+        if len(facets) >= max(1, num_facets):
+            break
+    return facets
+
+
+def _select_facet(
+    *,
+    parent_state: NodeState | None,
+    action: str,
+    facets: list[str],
+    facet_counts: dict[str, int],
+) -> str | None:
+    if parent_state is not None and action != "new_angle" and parent_state.facet:
+        return parent_state.facet
+    return choose_facet(facets, facet_counts)
+
+
+def _select_focus_question(
+    parent_state: NodeState | None,
+    used_open_questions: set[str],
+) -> str | None:
+    if parent_state is None:
+        return None
+    for question in parent_state.open_questions:
+        if question not in used_open_questions:
+            return question
+    return parent_state.open_questions[0] if parent_state.open_questions else None
+
+
+def _jaccard_similarity(left: frozenset[str], right: frozenset[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _is_repeated_sources(
+    url_sig: frozenset[str],
+    seen_url_sigs: list[frozenset[str]],
+    *,
+    threshold: float = 0.8,
+) -> bool:
+    return any(_jaccard_similarity(url_sig, seen) >= threshold for seen in seen_url_sigs)
 
 
 def call_local_llm(
@@ -126,10 +192,15 @@ def generate_fn(
     action: str,
     topic: str,
     temperature: float,
+    planner_temperature: float,
     max_tokens: int,
     max_results: int,
     max_queries: int,
     max_query_words: int,
+    facets: list[str],
+    exploration_state: dict[str, Any],
+    novelty_penalty_weight: float,
+    coverage_bonus: float,
     research_logger: ResearchLogger | None = None,
 ) -> tuple[NodeState, float]:
     start_time = time.time()
@@ -138,6 +209,23 @@ def generate_fn(
     perspective = choose_perspective(parent_state, action)
     parent_id = parent_state.node_id if parent_state is not None else None
     depth = 1 if parent_state is None else parent_state.depth + 1
+    facet_counts = exploration_state.setdefault("facet_counts", {})
+    used_queries = exploration_state.setdefault("used_queries", set())
+    used_open_questions = exploration_state.setdefault("used_open_questions", set())
+    seen_query_sigs = exploration_state.setdefault("seen_query_sigs", set())
+    seen_url_sigs = exploration_state.setdefault("seen_url_sigs", [])
+    facet = _select_facet(
+        parent_state=parent_state,
+        action=action,
+        facets=facets,
+        facet_counts=facet_counts,
+    )
+    focus_question = (
+        _select_focus_question(parent_state, used_open_questions)
+        if action == "deepen"
+        else None
+    )
+    avoid_queries = sorted(str(query) for query in used_queries)[-20:]
 
     planner_text = call_local_llm(
         system_prompt=query_planner_system_prompt(),
@@ -145,11 +233,14 @@ def generate_fn(
             topic=topic,
             action=action,
             perspective=perspective,
+            facet=facet,
             parent_state=parent_state,
+            avoid_queries=avoid_queries,
+            focus_question=focus_question,
             max_queries=max_queries,
             max_words=max_query_words,
         ),
-        temperature=0.0,
+        temperature=planner_temperature,
         max_tokens=max_tokens,
         research_logger=research_logger,
         node_id=parent_id,
@@ -172,6 +263,7 @@ def generate_fn(
             max_words=max_query_words,
         )
 
+    query_sig = query_set_signature(search_queries)
     per_query_results: list[list[dict[str, Any]]] = []
     search_successes: list[bool] = []
     for query_index, search_query in enumerate(search_queries, start=1):
@@ -204,6 +296,15 @@ def generate_fn(
             )
 
     sources = merge_and_dedupe_sources(per_query_results)
+    url_sig = source_url_signature(sources)
+    repetition_penalty = (
+        novelty_penalty_weight
+        if query_sig in seen_query_sigs or _is_repeated_sources(url_sig, seen_url_sigs)
+        else 0.0
+    )
+    applied_coverage_bonus = (
+        coverage_bonus if facet is not None and facet_counts.get(facet, 0) == 0 else 0.0
+    )
     search_success = any(search_successes)
     search_query = " | ".join(search_queries)
 
@@ -214,6 +315,8 @@ def generate_fn(
             action=action,
             perspective=perspective,
             queries=search_queries,
+            facet=facet,
+            focus_question=focus_question,
             num_sources=len(sources),
             search_success=search_success,
             results=sources,
@@ -224,6 +327,7 @@ def generate_fn(
         topic=topic,
         action=action,
         perspective=perspective,
+        facet=facet,
         search_queries=search_queries,
         sources=sources,
         parent_state=parent_state,
@@ -267,6 +371,8 @@ def generate_fn(
         findings,
         num_sources=len(sources),
         search_success=search_success,
+        repetition_penalty=repetition_penalty,
+        coverage_bonus=applied_coverage_bonus,
     )
     eval_results = make_eval_results(score, findings)
     state = NodeState(
@@ -280,6 +386,7 @@ def generate_fn(
         score=score,
         parent_id=parent_id,
         depth=depth,
+        facet=facet,
         search_query=search_query,
         search_queries=search_queries,
         open_questions=open_questions,
@@ -302,12 +409,16 @@ def generate_fn(
             parent_id=parent_id,
             action=action,
             perspective=perspective,
+            facet=facet,
             score=score,
             query=search_query,
             queries=search_queries,
             num_sources=len(sources),
             findings=findings,
             open_questions=open_questions,
+            focus_question=focus_question,
+            repetition_penalty=repetition_penalty,
+            coverage_bonus=applied_coverage_bonus,
             elapsed_ms=elapsed_ms,
         )
         research_logger.log_human(
@@ -315,6 +426,7 @@ def generate_fn(
             node_id=state.node_id,
             action=action,
             perspective=perspective,
+            facet=facet,
             score=f"{score:.3f}",
             sources=len(sources),
             findings=len(findings),
@@ -324,7 +436,11 @@ def generate_fn(
             (
                 f"- action: `{action}`\n"
                 f"- perspective: `{perspective}`\n"
+                f"- facet: `{facet or ''}`\n"
                 f"- score: `{score:.3f}`\n"
+                f"- repetition_penalty: `{repetition_penalty:.3f}`\n"
+                f"- coverage_bonus: `{applied_coverage_bonus:.3f}`\n"
+                f"- focus_question: `{focus_question or ''}`\n"
                 f"- search_queries: `{json.dumps(search_queries, ensure_ascii=False)}`\n"
                 f"- sources: `{len(sources)}`\n"
                 f"- findings: `{len(findings)}`\n\n"
@@ -333,6 +449,15 @@ def generate_fn(
                 f"{text}"
             ),
         )
+
+    if facet is not None:
+        facet_counts[facet] = facet_counts.get(facet, 0) + 1
+    used_queries.update(search_queries)
+    if focus_question is not None:
+        used_open_questions.add(focus_question)
+    seen_query_sigs.add(query_sig)
+    if url_sig:
+        seen_url_sigs.append(url_sig)
 
     return state, score
 
@@ -468,6 +593,32 @@ def write_final_report(
     )
 
 
+def decompose_topic(
+    *,
+    topic: str,
+    num_facets: int,
+    temperature: float,
+    max_tokens: int,
+    research_logger: ResearchLogger,
+) -> list[str]:
+    planner_text = call_local_llm(
+        system_prompt=topic_decomposition_system_prompt(),
+        user_prompt=build_topic_decomposition_prompt(topic, num_facets=num_facets),
+        temperature=temperature,
+        max_tokens=max_tokens,
+        research_logger=research_logger,
+        node_id=None,
+        action="topic_decomposition",
+        perspective="設計",
+        role="decomposer",
+    )
+    facets = parse_facets(planner_text, num_facets=num_facets)
+    if not facets:
+        facets = _fallback_facets(topic, num_facets=num_facets)
+    research_logger.log_event("facets", facets=facets)
+    return facets
+
+
 @hydra.main(version_base=None, config_path="configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     apply_env_defaults(cfg)
@@ -486,6 +637,7 @@ def main(cfg: DictConfig) -> None:
     topic = str(cfg["research_topic"])
     llm_cfg = cfg.get("llm", {})
     search_cfg = cfg.get("search", {})
+    exploration_cfg = cfg.get("exploration", {})
     algo_cfg = cfg["algo"]
     algo_name = str(algo_cfg["class_name"])
     algo_params = dict(algo_cfg.get("params", {}))
@@ -493,6 +645,26 @@ def main(cfg: DictConfig) -> None:
     max_num_nodes = int(cfg["max_num_nodes"])
     top_k = int(cfg.get("top_k", 5))
     actions = build_actions(bool(cfg.get("include_revise", True)))
+    planner_temperature = float(_cfg_get(exploration_cfg, "planner_temperature", 0.7))
+    num_facets = int(_cfg_get(exploration_cfg, "num_facets", 4))
+    novelty_penalty_weight = float(
+        _cfg_get(exploration_cfg, "novelty_penalty_weight", 0.15)
+    )
+    coverage_bonus = float(_cfg_get(exploration_cfg, "coverage_bonus", 0.05))
+    facets = decompose_topic(
+        topic=topic,
+        num_facets=num_facets,
+        temperature=planner_temperature,
+        max_tokens=int(_cfg_get(llm_cfg, "max_tokens", 1200)),
+        research_logger=research_logger,
+    )
+    exploration_state: dict[str, Any] = {
+        "facet_counts": {},
+        "used_queries": set(),
+        "used_open_questions": set(),
+        "seen_query_sigs": set(),
+        "seen_url_sigs": [],
+    }
 
     algo = build_algorithm(algo_name, algo_params, batch_size)
     generate_fns = {
@@ -501,10 +673,15 @@ def main(cfg: DictConfig) -> None:
             action=action,
             topic=topic,
             temperature=float(_cfg_get(llm_cfg, "temperature", 0.3)),
-            max_tokens=int(_cfg_get(llm_cfg, "max_tokens", 1200)),
+            planner_temperature=planner_temperature,
+            max_tokens=int(_cfg_get(llm_cfg, "max_tokens", 30000)),
             max_results=int(_cfg_get(search_cfg, "max_results", 5)),
             max_queries=int(_cfg_get(search_cfg, "max_queries", 3)),
-            max_query_words=int(_cfg_get(search_cfg, "max_query_words", 6)),
+            max_query_words=int(_cfg_get(search_cfg, "max_query_words", 10)),
+            facets=facets,
+            exploration_state=exploration_state,
+            novelty_penalty_weight=novelty_penalty_weight,
+            coverage_bonus=coverage_bonus,
             research_logger=research_logger,
         )
         for action in actions

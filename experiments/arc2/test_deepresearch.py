@@ -17,12 +17,16 @@ from prompt import (
 from run import generate_fn
 from utils import (
     NodeState,
+    choose_facet,
     dummy_web_search,
     extract_open_questions,
     merge_and_dedupe_sources,
+    parse_facets,
     parse_query_plan,
     parse_review_payload,
+    query_set_signature,
     score_review,
+    source_url_signature,
 )
 
 
@@ -61,6 +65,36 @@ def test_parse_query_plan_limits_words_and_queries() -> None:
     queries = parse_query_plan(payload, max_queries=2, max_words=5)
 
     assert queries == ["GDPR 日本企業 DPO 導入 事例", "CRA 日本企業 対応"]
+
+
+def test_parse_facets_limits_and_dedupes() -> None:
+    payload = json.dumps(
+        {
+            "facets": [
+                "EU規制の現状",
+                "日本企業の具体的対応",
+                "日本企業の具体的対応",
+                "業種別対応",
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    facets = parse_facets(payload, num_facets=2)
+
+    assert facets == ["EU規制の現状", "日本企業の具体的対応"]
+
+
+def test_parse_facets_returns_empty_for_invalid_json() -> None:
+    assert parse_facets("not json", num_facets=3) == []
+
+
+def test_choose_facet_prefers_lowest_count() -> None:
+    facets = ["EU規制の現状", "日本企業の具体的対応", "業種別対応"]
+
+    facet = choose_facet(facets, {"EU規制の現状": 2, "日本企業の具体的対応": 0})
+
+    assert facet == "日本企業の具体的対応"
 
 
 def test_extract_open_questions_from_markdown() -> None:
@@ -135,6 +169,33 @@ def test_merge_and_dedupe_sources_removes_url_and_similar_items() -> None:
     assert [source["position"] for source in sources] == [1, 2]
 
 
+def test_query_and_source_signatures_normalize_values() -> None:
+    query_sig = query_set_signature([" GDPR  日本企業 ", "gdpr 日本企業"])
+    source_sig = source_url_signature(
+        [
+            {"url": "https://example.com/a/"},
+            {"url": "https://example.com/b"},
+            {"url": ""},
+        ]
+    )
+
+    assert query_sig == frozenset({"gdpr 日本企業"})
+    assert source_sig == frozenset({"https://example.com/a", "https://example.com/b"})
+
+
+def test_score_review_applies_repetition_penalty_and_coverage_bonus() -> None:
+    score = score_review(
+        0.8,
+        ["根拠不足"],
+        num_sources=3,
+        search_success=True,
+        repetition_penalty=0.15,
+        coverage_bonus=0.05,
+    )
+
+    assert score == 0.66
+
+
 def test_research_logger_writes_jsonl(tmp_path: Path) -> None:
     logger = ResearchLogger(tmp_path)
     state = NodeState(
@@ -192,6 +253,8 @@ def test_generate_fn_uses_mocked_llm_and_search(monkeypatch, tmp_path: Path) -> 
 
     def fake_llm(**kwargs):
         if kwargs["role"] == "planner":
+            assert "日本企業の具体的対応" in kwargs["user_prompt"]
+            assert "既存クエリ" in kwargs["user_prompt"]
             return '{"queries": ["GDPR 日本企業 DPO", "CMP 導入 事例"]}'
         if kwargs["role"] == "reviewer":
             return '{"score": 0.9, "summary": "良い", "findings": []}'
@@ -204,25 +267,39 @@ def test_generate_fn_uses_mocked_llm_and_search(monkeypatch, tmp_path: Path) -> 
 
     monkeypatch.setattr("run.web_search", fake_web_search)
     monkeypatch.setattr("run.call_local_llm", fake_llm)
+    exploration_state = {
+        "facet_counts": {},
+        "used_queries": {"既存クエリ"},
+        "used_open_questions": set(),
+        "seen_query_sigs": set(),
+        "seen_url_sigs": [],
+    }
 
     state, score = generate_fn(
         None,
         action="new_angle",
         topic="ローカルLLMの活用",
         temperature=0.3,
+        planner_temperature=0.5,
         max_tokens=1200,
         max_results=3,
         max_queries=3,
         max_query_words=6,
+        facets=["日本企業の具体的対応", "EU規制の現状"],
+        exploration_state=exploration_state,
+        novelty_penalty_weight=0.15,
+        coverage_bonus=0.05,
         research_logger=logger,
     )
 
     assert state.action == "new_angle"
+    assert state.facet == "日本企業の具体的対応"
     assert "検索結果に基づく調査メモ" in state.text
     assert state.search_queries == ["GDPR 日本企業 DPO", "CMP 導入 事例"]
     assert state.open_questions == ["日本企業のDPO設置状況は？"]
-    assert score == 0.9
+    assert score == 0.95
     assert state.score == score
+    assert exploration_state["facet_counts"] == {"日本企業の具体的対応": 1}
 
 
 def test_prompts_include_reference_date() -> None:

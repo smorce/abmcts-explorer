@@ -46,7 +46,7 @@ def query_planner_system_prompt(*, reference_date: date | None = None) -> str:
     ref = format_reference_date(reference_date)
     return f"""
 あなたはDeepResearchの検索クエリ設計者です。
-次の探索アクションで使うWeb検索クエリを、日本語の短いキーワード列として設計してください。
+次の探索アクションで使うWeb検索クエリを、短いキーワード列として設計してください。
 
 参照日（調査実行日）: {ref}
 - 「最新」「直近」などの判断はこの日付を基準にしてください。
@@ -58,6 +58,24 @@ def query_planner_system_prompt(*, reference_date: date | None = None) -> str:
 - 各クエリは空白区切りで最大語数以内にする。
 - 必要な本数だけ返し、最大本数を無理に埋めない。
 - 同じ意味のクエリを重複させない。
+- 「避けるクエリ」と同一または酷似したクエリを返さない。
+- 日本語に限定しない。企業名、英語の規制名、Privacy Enhancing Technologies、PETs、ZKP、Federated Learning など、検索精度が上がる固有名詞や英語キーワードを積極的に使ってよい。
+""".strip()
+
+
+def topic_decomposition_system_prompt(*, reference_date: date | None = None) -> str:
+    ref = format_reference_date(reference_date)
+    return f"""
+あなたはDeepResearchの調査設計者です。
+調査テーマを、探索で網羅すべき独立したファセットに分解してください。
+
+参照日（調査実行日）: {ref}
+
+守ること:
+- 必ずJSONオブジェクトだけを返す。
+- 形式は {{"facets": ["ファセット", "..."]}}。
+- 各ファセットは短く、検索観点として使える粒度にする。
+- テーマの前半・後半のどちらかに偏らず、主要な論点を網羅する。
 """.strip()
 
 
@@ -137,6 +155,7 @@ def build_research_prompt(
     topic: str,
     action: ResearchAction,
     perspective: str,
+    facet: str | None,
     search_queries: list[str],
     sources: list[dict[str, Any]],
     parent_state: NodeState | None,
@@ -171,6 +190,9 @@ def build_research_prompt(
 # 観点
 {perspective}
 
+# ファセット
+{facet or "未指定"}
+
 # 親ノード
 {parent_summary}
 
@@ -193,27 +215,37 @@ def build_query_planner_prompt(
     topic: str,
     action: ResearchAction,
     perspective: str,
+    facet: str | None,
     parent_state: NodeState | None,
+    avoid_queries: list[str],
+    focus_question: str | None,
     max_queries: int,
     max_words: int,
     reference_date: date | None = None,
 ) -> str:
     if parent_state is None:
         parent_summary = "親ノードはありません。初回探索として、概要を素早く掴むための広めのキーワード群を作ってください。"
+        parent_open_questions: list[str] = []
+        parent_findings: list[str] = []
     else:
         parent_summary = json.dumps(
             {
                 "action": parent_state.action,
                 "perspective": parent_state.perspective,
+                "facet": parent_state.facet,
                 "text": parent_state.text,
-                "open_questions": parent_state.open_questions,
-                "findings": parent_state.findings,
                 "search_queries": parent_state.search_queries,
                 "score": parent_state.score,
             },
             ensure_ascii=False,
             indent=2,
         )
+        parent_open_questions = parent_state.open_questions
+        parent_findings = parent_state.findings
+
+    avoid_block = json.dumps(avoid_queries, ensure_ascii=False, indent=2)
+    open_questions_block = json.dumps(parent_open_questions, ensure_ascii=False, indent=2)
+    findings_block = json.dumps(parent_findings, ensure_ascii=False, indent=2)
 
     return f"""
 {reference_date_block(reference_date)}
@@ -227,6 +259,21 @@ def build_query_planner_prompt(
 # 観点
 {perspective}
 
+# ファセット
+{facet or "未指定"}
+
+# このアクションで最優先する問い
+{focus_question or "未指定"}
+
+# 親ノードの open_questions
+{open_questions_block}
+
+# 親ノードの reviewer findings
+{findings_block}
+
+# 避けるクエリ
+{avoid_block}
+
 # 親ノード
 {parent_summary}
 
@@ -234,10 +281,36 @@ def build_query_planner_prompt(
 - クエリ本数: 1〜{max_queries}本
 - 1クエリの最大語数: {max_words}語
 - 自然文は禁止。例: "単語 単語 単語 単語" のような単語列にする。
-- root(親なし)では、概要把握・最新動向・主要プレイヤーなどを必要な範囲で分ける。
+- root(親なし)または new_angle では、指定ファセットに沿って未探索の角度を広げる。
+- deepen では「このアクションで最優先する問い」を具体的に検証できる検索語へ分解する。
+- revise では reviewer findings を解消する追加根拠・具体例・企業名を探す。
+- criticize では親ノードの主張の反証、弱点、古い情報、未検証の前提を探す。
+- 「避けるクエリ」と同一・類似のクエリは禁止。
 
 # 出力JSON
 {{"queries": ["単語 単語 単語"]}}
+""".strip()
+
+
+def build_topic_decomposition_prompt(
+    topic: str,
+    *,
+    num_facets: int,
+    reference_date: date | None = None,
+) -> str:
+    return f"""
+{reference_date_block(reference_date)}
+
+# 調査テーマ
+{topic}
+
+# 制約
+- ファセット数: 最大 {num_facets} 個
+- 各ファセットは短い名詞句にする。
+- EU側の規制現状と、日本企業の具体的対応の両方を含める。
+
+# 出力JSON
+{{"facets": ["EU規制の現状", "日本企業の具体的対応"]}}
 """.strip()
 
 

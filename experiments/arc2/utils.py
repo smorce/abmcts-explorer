@@ -38,6 +38,7 @@ class NodeState:
     node_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     parent_id: str | None = None
     depth: int = 1
+    facet: str | None = None
     search_query: str | None = None
     search_queries: list[str] = field(default_factory=list)
     open_questions: list[str] = field(default_factory=list)
@@ -86,6 +87,34 @@ def parse_query_plan(text: str, *, max_queries: int, max_words: int) -> list[str
         if len(queries) >= max_queries:
             break
     return queries
+
+
+def parse_facets(text: str, *, num_facets: int) -> list[str]:
+    data = parse_json_object(text)
+    if data is None:
+        return []
+
+    raw_facets = data.get("facets", [])
+    if not isinstance(raw_facets, list):
+        return []
+
+    facets: list[str] = []
+    seen: set[str] = set()
+    for item in raw_facets:
+        facet = str(item).strip()
+        if not facet or facet in seen:
+            continue
+        facets.append(facet)
+        seen.add(facet)
+        if len(facets) >= max(1, num_facets):
+            break
+    return facets
+
+
+def choose_facet(facets: list[str], facet_counts: dict[str, int]) -> str | None:
+    if not facets:
+        return None
+    return min(facets, key=lambda facet: (facet_counts.get(facet, 0), facets.index(facet)))
 
 
 def _short_topic_words(topic: str, *, max_words: int) -> str:
@@ -221,6 +250,23 @@ def merge_and_dedupe_sources(
     return merged
 
 
+def _signature_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def query_set_signature(queries: list[str]) -> frozenset[str]:
+    return frozenset(_signature_text(query) for query in queries if query.strip())
+
+
+def source_url_signature(sources: list[dict[str, Any]]) -> frozenset[str]:
+    urls: set[str] = set()
+    for source in sources:
+        url = str(source.get("url", "")).strip().rstrip("/")
+        if url:
+            urls.add(url)
+    return frozenset(urls)
+
+
 def dummy_web_search(query: str, limit: int = 5) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for index in range(max(1, limit)):
@@ -310,13 +356,15 @@ def score_review(
     *,
     num_sources: int,
     search_success: bool,
+    repetition_penalty: float = 0.0,
+    coverage_bonus: float = 0.0,
 ) -> float:
     penalty = min(0.30, 0.04 * len(findings))
     if num_sources == 0:
         penalty += 0.20
     if not search_success:
         penalty += 0.05
-    return round(clamp01(base_score - penalty), 6)
+    return round(clamp01(base_score - penalty - repetition_penalty + coverage_bonus), 6)
 
 
 def make_eval_results(score: float, findings: list[str]) -> list[EvalResultWithScore]:
@@ -339,6 +387,7 @@ def state_formatter_html(state: NodeState) -> str:
     return (
         f"<b>action:</b> {html.escape(state.action)}<br>"
         f"<b>perspective:</b> {html.escape(state.perspective)}<br>"
+        f"<b>facet:</b> {html.escape(state.facet or '')}<br>"
         f"<b>score:</b> {state.score:.3f}<br>"
         f"<b>depth:</b> {state.depth}<br>"
         f"<b>queries:</b><br>{queries}<br>"
