@@ -8,6 +8,8 @@
 - ローカルLLM: `llama-server` が `http://127.0.0.1:1067` で起動済み
 - Web検索: SearXNG が `http://127.0.0.1:4866` で起動済み
 - Python実行: `uv`
+- リポジトリが OneDrive 配下にある場合: `$env:UV_LINK_MODE='copy'` を設定（ハードリンク不可のため）
+- 日本語ログ・出力の文字化け防止: `$env:PYTHONUTF8='1'` を設定
 
 ## 今回のテーマ
 
@@ -71,7 +73,36 @@ Invoke-RestMethod 'http://127.0.0.1:4866/search?q=GDPR&format=json&pageno=1&engi
 
 ## クイック実行
 
-まずは探索数を少なくして動作確認します。
+### 推奨: `--no-project` で実行（Windows）
+
+`pyproject.toml` には `pygraphviz` が含まれますが、DeepResearch 実験（`experiments/arc2`）自体は **pygraphviz を使いません**。Windows では `uv run --link-mode=copy` が `pygraphviz` のビルドで失敗しやすいため（後述）、次の **`--no-project` 方式を既定**にしてください。
+
+共通の前処理（各コマンドの前に実行）:
+
+```powershell
+$env:PYTHONUTF8='1'
+$env:PYTHONPATH='src;experiments/arc2'
+```
+
+#### 動作確認（ノード数少なめ）
+
+```powershell
+uv run --no-project --with hydra-core --with omegaconf --with python-dotenv --with tqdm --with httpx --with openai --with 'treequest[abmcts-m,vis]' experiments/arc2/run.py max_num_nodes=2 top_k=2 algo.class_name=ABMCTSA
+```
+
+#### DeepResearch 本番実行（ABMCTSM バッチ）
+
+ユーザーから DeepResearch の依頼を受けた場合はこちらで実行します。1 ノードあたり LLM 3 回＋検索のため、**完了まで数十分〜1 時間以上**かかることがあります。途中で止めないでください。
+
+```powershell
+uv run --no-project --with hydra-core --with omegaconf --with python-dotenv --with tqdm --with httpx --with openai --with 'treequest[abmcts-m,vis]' experiments/arc2/run.py max_num_nodes=10 top_k=5 algo.class_name=ABMCTSM algo.batch_size=5
+```
+
+起動直後に `PyTensor ... g++ not detected` や `Sampling: [mu_alpha, ...]` が大量に出ても、DeepResearch の動作には通常 **影響しません**（無視してよい警告です）。
+
+### 代替: プロジェクト依存で実行（Graphviz 導入済みの場合のみ）
+
+Graphviz 本体と開発用ヘッダ（`graphviz/cgraph.h`）を Windows にインストール済みで、`.venv` に `pygraphviz` が入っている場合のみ、次も使えます。
 
 ```powershell
 $env:PYTHONUTF8='1'
@@ -79,21 +110,31 @@ $env:UV_LINK_MODE='copy'
 uv run --link-mode=copy experiments/arc2/run.py max_num_nodes=2 top_k=2 algo.class_name=ABMCTSA
 ```
 
-`ABMCTSM` のバッチ実行を試す場合(ユーザーからDeepResearchの依頼を受けた場合はこちらで実行する):
+## トラブルシューティング
 
-```powershell
-$env:PYTHONUTF8='1'
-$env:UV_LINK_MODE='copy'
-uv run --link-mode=copy experiments/arc2/run.py max_num_nodes=10 top_k=5 algo.class_name=ABMCTSM algo.batch_size=5
+### `pygraphviz` のビルド失敗
+
+`uv run --link-mode=copy` 実行時に次のようなエラーが出る場合:
+
+```text
+fatal error C1083: include ファイルを開けません。'graphviz/cgraph.h': No such file or directory
 ```
 
-`uv run --link-mode=copy` が `treequest` のGit固定コミットで失敗する場合は、依存を明示してテスト/実行環境を作る方法を使います。
+**原因**: `pyproject.toml` の依存 `pygraphviz` が Graphviz C ヘッダなしでソースビルドされようとしている。`.venv` があっても `pygraphviz` が未インストールのことが多い。
 
-```powershell
-$env:PYTHONUTF8='1'
-$env:PYTHONPATH='src;experiments/arc2'
-uv run --no-project --with hydra-core --with omegaconf --with python-dotenv --with tqdm --with httpx --with openai --with 'treequest[abmcts-m,vis]' experiments/arc2/run.py max_num_nodes=2 top_k=2 algo.class_name=ABMCTSA
-```
+**対処**:
+
+1. **推奨**: 上記の **`--no-project` コマンド**に切り替える（DeepResearch には十分）。
+2. どうしても `uv run --link-mode=copy` を使う場合: [Graphviz for Windows](https://graphviz.org/download/) をインストールし、`GRAPHVIZ_INCLUDE_DIR` / `GRAPHVIZ_LIB_DIR` を設定したうえで `uv sync --link-mode=copy` を再実行。
+
+### `treequest` の Git 依存で失敗
+
+`uv run --link-mode=copy` が `treequest` の Git 固定コミットで失敗する場合も、同じ **`--no-project`** 方式で回避できます。
+
+### 接続エラー
+
+- `llama-server` 未起動 → `http://127.0.0.1:1067` で OpenAI Responses API 互換サーバーが応答するか確認。
+- SearXNG 未起動 → 上記「接続確認」の REST 呼び出しが JSON を返すか確認。
 
 ## 出力先
 
@@ -133,10 +174,10 @@ uv run --no-project --with pytest --with hydra-core --with omegaconf --with pyth
 
 ## 検索・探索の調整
 
-Hydra override で検索本数や語数を変えられます。
+Hydra override で検索本数や語数を変えられます（`--no-project` 実行時も末尾に同じ override を付けられます）。
 
 ```powershell
-uv run --link-mode=copy experiments/arc2/run.py search.max_queries=2 search.max_query_words=5 search.max_results=3
+uv run --no-project --with hydra-core --with omegaconf --with python-dotenv --with tqdm --with httpx --with openai --with 'treequest[abmcts-m,vis]' experiments/arc2/run.py search.max_queries=2 search.max_query_words=5 search.max_results=3
 ```
 
 ## テーマを変える
@@ -144,7 +185,7 @@ uv run --link-mode=copy experiments/arc2/run.py search.max_queries=2 search.max_
 一時的にテーマを変える場合は、Hydra override を使います。
 
 ```powershell
-uv run --link-mode=copy experiments/arc2/run.py research_topic='日本企業のGDPR対応とCookie同意管理の最新動向'
+uv run --no-project --with hydra-core --with omegaconf --with python-dotenv --with tqdm --with httpx --with openai --with 'treequest[abmcts-m,vis]' experiments/arc2/run.py research_topic='日本企業のGDPR対応とCookie同意管理の最新動向'
 ```
 
 恒久的に変える場合は、`experiments/arc2/configs/config.yaml` の `research_topic` を編集します。
