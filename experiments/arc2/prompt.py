@@ -59,7 +59,6 @@ def query_planner_system_prompt(*, reference_date: date | None = None) -> str:
 - 必要な本数だけ返し、最大本数を無理に埋めない。
 - 同じ意味のクエリを重複させない。
 - 「避けるクエリ」と同一または酷似したクエリを返さない。
-- 日本語に限定しない。企業名、英語の規制名、Privacy Enhancing Technologies、PETs、ZKP、Federated Learning など、検索精度が上がる固有名詞や英語キーワードを積極的に使ってよい。
 """.strip()
 
 
